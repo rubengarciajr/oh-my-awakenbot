@@ -53,6 +53,7 @@ MAX_OPEN_MESSAGES = 200
 PEEK_CHARS = 400
 THINKING_MIN_GAP = 1.0
 CONNECT_TIMEOUT = 60.0
+START_OWNER_TIMEOUT = 5.0
 OFFLINE_COOLDOWN = 10.0
 # chat.attach: one 100 MB file arrives base64'd in one frame; Hermes' own attach calls cap images (25 MB) and
 # PDFs (50 MB) lower and say so. pdf.attach renders pages, so it gets more than the default RPC deadline.
@@ -3287,6 +3288,7 @@ class Conn:
         self.lock = asyncio.Lock()
         self.failed_at = 0.0
         self.failed_msg = ""
+        self.failed_code = "bot_offline"
         self.main_id: str | None = None        # runtime id of the main chat
         self.main_stored: str | None = None
         self.generation = None
@@ -3328,7 +3330,6 @@ class Bridge:
         self.clients: set = set()
         self.server = None
         self.port = 0
-        self._env_lock = asyncio.Lock()
         self._create_lock = asyncio.Lock()  # serialize profile-name reservation across app connections
         self._tasks: set[asyncio.Task] = set()
         self._routine_state: dict[str, dict] = {}
@@ -3482,9 +3483,32 @@ class Bridge:
 
     async def _default_connect(self, stack: AsyncExitStack, home: Path):
         from hermes_cli.gateway_client import connect_gateway
-        async with self._env_lock:  # connect_gateway reads HERMES_HOME when it is entered
-            os.environ["HERMES_HOME"] = str(home)
-            return await stack.enter_async_context(connect_gateway())
+        from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint, ensure_gateway_runtime
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        # An owner still starting must stay pending, without another start request or a
+        # minute-long ensure thread behind a process-wide environment lock. Explicit
+        # deadlines also prevent cancelled attempts leaving adaptive ensure threads alive.
+        runtime = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=2.0)
+        if runtime.state == "absent":
+            runtime = await asyncio.to_thread(ensure_gateway_runtime, home,
+                                             timeout=START_OWNER_TIMEOUT, idle_exit=True)
+        if not attachable(runtime):
+            if runtime.state == "starting":
+                raise BridgeError("gateway_starting", "Hermes is starting. Awaken Bot will reconnect automatically.")
+            reason = runtime.reason_code or "not_ready"
+            transient = runtime.state in {"absent", "draining"} or reason in {"control_timeout", "runtime_start_failed"}
+            code = "bot_offline" if transient else "gateway_unavailable"
+            detail = f" {runtime.detail}" if getattr(runtime, "detail", None) else ""
+            raise BridgeError(code, f"Hermes is not ready ({runtime.state}: {reason}).{detail}")
+
+        # The endpoint and context-local home bind the bootstrap ticket to this bot.
+        # No shared environment mutation: another profile can connect independently.
+        scope = set_hermes_home_override(home)
+        try:
+            return await stack.enter_async_context(connect_gateway(endpoint=runtime.endpoint))
+        finally:
+            reset_hermes_home_override(scope)
 
     def _bot(self, name) -> dict:
         if not isinstance(name, str) or not name:
@@ -3506,7 +3530,7 @@ class Bridge:
             if conn.connected:
                 return conn
             if self.clock() - conn.failed_at < OFFLINE_COOLDOWN and conn.failed_msg:
-                raise BridgeError("bot_offline", conn.failed_msg)
+                raise BridgeError(conn.failed_code, conn.failed_msg)
             conn.connecting = True
             stack = AsyncExitStack()
             try:
@@ -3515,15 +3539,23 @@ class Bridge:
             except asyncio.CancelledError:
                 with contextlib.suppress(BaseException):
                     await stack.aclose()
+                conn.connecting = False
                 raise
             except Exception as e:
                 with contextlib.suppress(BaseException):
                     await stack.aclose()
+                if isinstance(e, BridgeError) and e.code == "gateway_starting":
+                    # Pending is distinct from failed. A readiness retry must not inherit
+                    # the offline cooldown, and the sidebar must not call it disconnected.
+                    conn.failed_msg = ""
+                    await self.emit("bot.status", name, status="starting", running=False)
+                    raise
                 conn.failed_at = self.clock()
-                conn.failed_msg = f"{name} is offline: {str(e) or type(e).__name__}"
+                conn.failed_code = e.code if isinstance(e, BridgeError) else "bot_offline"
+                conn.failed_msg = e.message if isinstance(e, BridgeError) else f"{name} is offline: {str(e) or type(e).__name__}"
                 conn.connecting = False
                 await self.emit("bot.status", name, status="offline", running=False)
-                raise BridgeError("bot_offline", conn.failed_msg)
+                raise BridgeError(conn.failed_code, conn.failed_msg)
             conn.stack, conn.client, conn.connecting, conn.failed_msg = stack, client, False, ""
             conn.pump = self._spawn(self._pump(conn))
         await self.emit("bot.status", name, status="online", running=conn.in_turn)
@@ -3556,6 +3588,7 @@ class Bridge:
             if was_turn:
                 await self.emit("turn.end", conn.name, outcome="error", error=reason or "gateway disconnected")
             conn.failed_at, conn.failed_msg = self.clock(), reason or f"{conn.name} is offline"
+            conn.failed_code = "bot_offline"
             await self.emit("bot.status", conn.name, status="offline", running=False)
 
     async def _call(self, conn: Conn, method: str, **params):

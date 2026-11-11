@@ -294,8 +294,8 @@ test("lines that carry information are 12px in --muted, not the 11px tertiary gr
   const muted = await token(page, "--muted");
   const look = (sel: string) => page.locator(sel).first().evaluate((e) => [getComputedStyle(e).color, getComputedStyle(e).fontSize]);
   await page.getByTestId("bot-friren").click();
-  await expect(page.getByTestId("chat-error")).toBeVisible();
-  expect(await look("[data-testid=chat-error]")).toEqual([muted, "12px"]);
+  await expect(page.getByTestId("chat-reconnecting")).toBeVisible();
+  expect(await look("[data-testid=chat-reconnecting]")).toEqual([muted, "12px"]);
   // the key hint beside an approval's buttons
   await page.getByTestId("bot-kami").click();
   await mock("mock.ask", { bot: "kami", kind: "approval" });

@@ -39,6 +39,11 @@ Native windows use an off-black draggable title area, available during launch an
 macOS overlays this area with native traffic lights and keeps its rounded window corners and
 standard window-manager behavior. Windows uses an undecorated window with custom controls.
 
+Chat opening recognizes a starting Hermes gateway, displays its startup status, and retries
+read-only opening automatically. Saved messages remain visible across reconnects. The selected
+chat loads before optional metadata, and profile connections use independent context-local homes.
+Permanent protocol or permission refusals show their actual reason rather than retrying indefinitely.
+
 ## Branding and launch
 
 The launch screen lasts five seconds while the bridge starts in the background. Each launch independently

@@ -1,5 +1,5 @@
 import "./chat.css";
-import { selectAsks, useStore } from "../state/store";
+import { chatReadRecoverable, selectAsks, useStore } from "../state/store";
 import { Header } from "./parts/Header";
 import { Timeline } from "./parts/Timeline";
 import { Composer } from "./parts/Composer";
@@ -33,8 +33,10 @@ export function Chat() {
     );
   }
   const chat = s.chats[bot.name];
+  const starting = bot.status === "starting" || chat?.openErrorCode === "gateway_starting";
+  const recovering = chatReadRecoverable(chat?.openErrorCode);
   // first-run cards only over a chat with no conversation yet, never above its history
-  const blank = !!chat?.loaded && !chat.openError && chat.items.length === 0;
+  const blank = !!chat?.loaded && !chat.openError && !starting && chat.items.length === 0;
   const asking = selectAsks(s).some((a) => a.bot === bot.name);
   // the bridge is away (it reconnects by itself): the composer says so and waits, like a bot that is offline
   const away = s.conn !== "open";
@@ -50,8 +52,8 @@ export function Chat() {
           bot={bot}
           running={!!chat?.turn}
           asking={asking}
-          offline={bot.status === "offline" || away}
-          offlineText={away ? t("chat.connecting") : undefined}
+          offline={bot.status === "offline" || away || starting || recovering}
+          offlineText={starting ? t("row.starting") : away || recovering ? t("chat.connecting") : undefined}
           skills
           onSend={(text) => void s.send(text)}
           onSendFiles={(text, files) => s.sendWithFiles(text, files)}

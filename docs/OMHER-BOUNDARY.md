@@ -14,6 +14,7 @@ is in `apps/omher/README.md`.
    omher may pass a thread reference to the bot; the bot posts with its own tools and approvals.
 3. omher sends, answers and interrupts only in the bot's main chat, the session titled `Bot Chat`, and in folder chats the bridge created itself for an oh-my-hermes session (`folder.open`); the bridge has exactly one `prompt.submit` call site and it takes the main chat's id or such a folder chat's. Files the person attaches go to that same chat only, as bytes through Hermes' own `image.attach_bytes`, `pdf.attach` and `file.attach` (`chat.attach`, up to 100 MB each); the bridge never opens the person's files.
 4. omher talks only to the person's own Hermes gateway on this machine, over loopback, through Hermes' own `connect_gateway`.
+   It probes readiness with Hermes' own discovery API, starts an absent owner through Hermes with a finite deadline, and never restarts an owner that is still starting. Profile endpoints and context-local home overrides isolate concurrent connections without changing the process environment. Automatic recovery retries only read-only chat opening; it never resends a prompt, attachment, model change or approval.
 5. omher makes no LLM or API call itself. Every model call is Hermes'.
 6. The bridge listens on 127.0.0.1 only and refuses any connection that lacks the random token the app made at launch.
 7. The app starts the bridge as a child process and stops it when the app exits.

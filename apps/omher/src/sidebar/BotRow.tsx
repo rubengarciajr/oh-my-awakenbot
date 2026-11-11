@@ -15,6 +15,7 @@ const liveText = (status: string | undefined) => (status && status !== WORKING ?
 
 /** One-line preview: the live step while running, else the last assistant text. */
 export function preview(bot: Bot, chat: Chat | undefined): { text: string; live: boolean; ts: number | null } {
+  if (bot.status === "starting" || chat?.openErrorCode === "gateway_starting") return { text: t("row.starting"), live: false, ts: null };
   if (bot.status === "offline") return { text: t("row.offline"), live: false, ts: null };
   if (chat?.turn) return { text: liveText(chat.turn.status), live: true, ts: chat.turn.startedAt / 1000 };
   const items = chat?.items ?? [];

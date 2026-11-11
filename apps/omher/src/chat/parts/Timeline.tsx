@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import type { Bot } from "../../lib/protocol";
-import { selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
+import { chatReadRecoverable, selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
 import { slots } from "../../features";
 import { dayLabel, hhmm, sameDay } from "../../app/time";
 import { Bubble } from "./Bubble";
@@ -28,6 +28,8 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
   const s = useStore();
   const items = selectTimeline(s, bot.name);
   const chat = s.chats[bot.name];
+  const starting = bot.status === "starting" || chat?.openErrorCode === "gateway_starting";
+  const recovering = chatReadRecoverable(chat?.openErrorCode);
   const streaming = chat?.turn?.streaming ?? "";
   const typing = awaitingFirstToken(chat);
   // the one row of the live run that carries the bot's ringed face
@@ -102,20 +104,22 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
       }}
     >
-      {!chat?.loaded && items.length === 0 && <div className="day">{t("tl.loading")}</div>}
-      {chat?.openError && (
+      {!chat?.loaded && items.length === 0 && !starting && <div className="day">{t("tl.loading")}</div>}
+      {starting && <div className="day note" role="status" data-testid="chat-starting">{t("tl.starting", { bot: bot.display_name })}</div>}
+      {!starting && recovering && <div className="day note" role="status" data-testid="chat-reconnecting">{t("tl.reconnecting", { bot: bot.display_name })}</div>}
+      {chat?.openError && !starting && !recovering && (
         <div className="day note" data-testid="chat-error">
           {t("tl.unreachable", { bot: bot.display_name, error: chat.openError })}
         </div>
       )}
       {/* A Hermes installed from the setup screen has no model yet: the first chat screen says where to pick one,
           never a terminal command. */}
-      {chat?.loaded && !chat.openError && !(chat.model || bot.model) && (
+      {chat?.loaded && !chat.openError && !starting && !(chat.model || bot.model) && (
         <div className="day note" data-testid="chat-no-model">
           {t("tl.noModel", { bot: bot.display_name })}
         </div>
       )}
-      {chat?.loaded && !chat.openError && items.length === 0 && <div className="day">{t("tl.sayHi", { bot: bot.display_name })}</div>}
+      {chat?.loaded && !chat.openError && !starting && items.length === 0 && <div className="day">{t("tl.sayHi", { bot: bot.display_name })}</div>}
       {items.map((it, i) => {
         // the live activity line with nothing to say yet: the typing bubble below stands in for it
         if (it.kind === "activity" && chat?.turn?.id === it.turn.id && !turnHasActivity(it.turn)) return null;

@@ -186,6 +186,8 @@ export interface Chat {
   turnSeq: number;
   /** Set when chat.open failed (bot offline, gateway refused); the timeline shows it instead of loading forever. */
   openError?: string | null;
+  /** Typed failure class: startup/transient recovery is separate from a semantic refusal. */
+  openErrorCode?: string | null;
   /** A status that came while no turn ran (Hermes says "Resuming interrupted turn…" just before the turn starts):
    *  never shown on its own; a turn that starts within EARLY_STATUS_MS opens with it. */
   early?: { text: string; at: number } | null;
@@ -537,7 +539,7 @@ function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string):
 
 export type Action =
   | { type: "conn"; status: BridgeStatus; now?: number }
-  | { type: "chat.failed"; bot: string; message: string }
+  | { type: "chat.failed"; bot: string; message: string; code?: string }
   | { type: "hello"; hello: HelloResult }
   | { type: "error"; message: string | null }
   | { type: "bots"; bots: Bot[] }
@@ -802,7 +804,7 @@ export function reduce(state: AppState, a: Action): AppState {
       return { ...state, conn: a.status, chats };
     }
     case "chat.failed":
-      return touchChat(state, a.bot, (c) => ({ ...c, loaded: true, openError: a.message }));
+      return touchChat(state, a.bot, (c) => ({ ...c, loaded: true, openError: a.message, openErrorCode: a.code ?? null }));
     case "hello":
       return { ...state, hello: a.hello };
     case "error":
@@ -812,7 +814,7 @@ export function reduce(state: AppState, a: Action): AppState {
     case "select":
       return { ...state, selectedBot: a.bot, unread: { ...state.unread, [a.bot]: 0 }, ui: { ...state.ui, view: "chat" } };
     case "chat.opened":
-      return touchChat(state, a.bot, (c) => ({ ...applyOpened(c, a.res, a.now, a.bot), openError: null }));
+      return touchChat(state, a.bot, (c) => ({ ...applyOpened(c, a.res, a.now, a.bot), openError: null, openErrorCode: null }));
     case "local.user":
       return touchChat(state, a.bot, (c) =>
         withItems(c, [
@@ -1196,6 +1198,9 @@ function lastUserReplied(state: AppState, bot: string): boolean {
 
 const errText = (e: unknown) =>
   typeof e === "object" && e && "message" in e ? String((e as { message: unknown }).message) : String(e);
+const errCode = (e: unknown) => typeof e === "object" && e && "code" in e ? String(e.code) : "";
+export const chatReadRecoverable = (code: string | null | undefined) =>
+  ["gateway_starting", "bot_offline", "timeout", "disconnected"].includes(code ?? "");
 
 export interface StoreOptions {
   now?: () => number;
@@ -1229,8 +1234,22 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   // skills.list per bot: the promise (asked once) and the names, for hoisting tokens when a message is sent
   const skillLists = new Map<string, Promise<Skill[]>>();
   const skillNames = new Map<string, string[]>();
+  const chatReads = new Map<string, Promise<void>>();
+  let connectionEpoch = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryAttempt = 0;
+  let retryBot: string | null = null;
+  const cancelRetry = () => {
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    retryTimer = null;
+  };
 
   const dispatch = (a: Action) => {
+    if (a.type === "select" && a.bot !== state.selectedBot) {
+      cancelRetry();
+      retryAttempt = 0;
+      retryBot = null;
+    }
     const next = reduce(state, a);
     if (next === state) return;
     state = next;
@@ -1240,39 +1259,78 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   };
   const fail = (e: unknown) => dispatch({ type: "error", message: errText(e) });
   const botArg = (bot?: string) => bot ?? state.selectedBot;
+  const chatStarting = (bot: string) => state.chats[bot]?.openErrorCode === "gateway_starting"
+    || state.bots.some((b) => b.name === bot && b.status === "starting");
 
-  const loadChat = async (bot: string) => {
-    let res: ChatOpenResult;
-    try {
-      res = await bridge.request("chat.open", { bot });
-    } catch (e) {
-      // Without this the chat stays unloaded and the timeline shows "Loading…" forever (bot offline).
-      dispatch({ type: "chat.failed", bot, message: errText(e) });
-      throw e;
-    }
-    dispatch({ type: "chat.opened", bot, res, now: now() });
+  const scheduleRetry = (bot: string, code: string) => {
+    if (state.conn !== "open" || state.selectedBot !== bot || !chatReadRecoverable(code)) return;
+    if (retryBot !== bot) retryAttempt = 0;
+    retryBot = bot;
+    cancelRetry();
+    const starting = code === "gateway_starting";
+    const delay = Math.min(starting ? 10000 : 30000, (starting ? 2000 : 5000) * 2 ** Math.min(retryAttempt++, 5));
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (state.conn === "open" && state.selectedBot === bot) void loadChat(bot);
+    }, delay);
   };
+  const loadChat = (bot: string): Promise<void> => {
+    const pending = chatReads.get(bot);
+    if (pending) return pending;
+    if (state.conn !== "open") return Promise.resolve();
+    if (state.selectedBot === bot) cancelRetry();
+    const epoch = connectionEpoch;
+    const read = (async () => {
+      try {
+        const res = await bridge.request("chat.open", { bot });
+        if (epoch !== connectionEpoch || state.conn !== "open") return;
+        dispatch({ type: "chat.opened", bot, res, now: now() });
+        dispatch({ type: "event", ev: { event: "bot.status", bot, status: "online", running: res.running }, now: now() });
+        if (state.selectedBot === bot) {
+          cancelRetry();
+          retryAttempt = 0;
+          retryBot = null;
+          // The selected conversation is usable before any optional metadata read settles.
+          void Promise.allSettled([loadElsewhere(bot), loadRoutines(bot), loadModels(bot)]);
+        }
+      } catch (e) {
+        if (epoch !== connectionEpoch || state.conn !== "open") return;
+        const code = errCode(e);
+        dispatch({ type: "chat.failed", bot, message: errText(e), code });
+        if (code === "gateway_starting")
+          dispatch({ type: "event", ev: { event: "bot.status", bot, status: "starting", running: false }, now: now() });
+        if (chatReadRecoverable(code)) scheduleRetry(bot, code);
+        else fail(e);
+      }
+    })();
+    chatReads.set(bot, read);
+    const release = () => { if (chatReads.get(bot) === read) chatReads.delete(bot); };
+    void read.then(release, release);
+    return read;
+  };
+  const metadataFailed = (e: unknown) => { if (!chatReadRecoverable(errCode(e))) fail(e); };
   const loadElsewhere = async (bot?: string) => {
     const b = botArg(bot);
-    if (!b) return;
+    if (!b || state.conn !== "open") return;
     try {
       const r = await bridge.request("elsewhere.list", { bot: b });
       dispatch({ type: "elsewhere", bot: b, sessions: r.sessions });
     } catch (e) {
-      fail(e);
+      metadataFailed(e);
     }
   };
   const loadRoutines = async (bot?: string) => {
     const b = botArg(bot);
-    if (!b) return;
+    if (!b || state.conn !== "open") return;
     try {
       const r = await bridge.request("routines.list", { bot: b });
       dispatch({ type: "routines", bot: b, routines: r.routines });
     } catch (e) {
-      fail(e);
+      metadataFailed(e);
     }
   };
   const loadAutomations = async () => {
+    if (state.conn !== "open") return;
     try {
       dispatch({ type: "automations", automations: (await bridge.request("automations.list", {})).automations });
     } catch {
@@ -1281,21 +1339,20 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   };
   const loadModels = async (bot?: string) => {
     const b = botArg(bot);
-    if (!b) return;
+    if (!b || state.conn !== "open") return;
     try {
       dispatch({ type: "models", bot: b, options: await bridge.request("models.options", { bot: b }) });
     } catch (e) {
-      fail(e);
+      metadataFailed(e);
     }
   };
 
-  const online = (b: Bot) => b.status !== "offline";
+  const online = (b: Bot) => b.status === "online";
 
   const selectBot = async (bot: string) => {
     dispatch({ type: "select", bot });
-    const jobs: Promise<unknown>[] = [loadElsewhere(bot), loadRoutines(bot), loadModels(bot)];
-    if (!state.chats[bot]?.loaded || state.chats[bot]?.openError) jobs.push(loadChat(bot).catch(fail));
-    await Promise.all(jobs);
+    if (!state.chats[bot]?.loaded || state.chats[bot]?.openError) await loadChat(bot);
+    else if (state.conn === "open") void Promise.allSettled([loadElsewhere(bot), loadRoutines(bot), loadModels(bot)]);
   };
 
   const reloadBots = async () => {
@@ -1307,17 +1364,23 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     }
   };
 
-  /** After a reconnect: events were missed, so re-read the lists and every loaded chat. */
+  /** After reconnect, recover the selected chat immediately; optional reads cannot hold it up. */
   const resync = async () => {
+    const epoch = connectionEpoch;
+    const selected = state.selectedBot;
+    const selectedRead = selected ? loadChat(selected) : Promise.resolve();
     try {
       const r = await bridge.request("bots.list", {});
+      if (epoch !== connectionEpoch || state.conn !== "open") return;
       dispatch({ type: "bots", bots: r.bots });
     } catch (e) {
       return fail(e);
     }
     const names = new Set(state.bots.map((b) => b.name));
-    const loaded = Object.entries(state.chats).filter(([n, c]) => c.loaded && names.has(n)).map(([n]) => n);
-    await Promise.allSettled([...loaded.map(loadChat), loadElsewhere(), loadRoutines(), loadAutomations()]);
+    const loaded = Object.entries(state.chats).filter(([n, c]) => n !== selected && c.loaded && names.has(n)
+      && state.bots.some((b) => b.name === n && online(b))).map(([n]) => n);
+    void Promise.allSettled([...loaded.map(loadChat), loadAutomations()]);
+    await selectedRead;
   };
 
   const actions: Actions = {
@@ -1326,9 +1389,17 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       started = true;
       let opened = false;
       bridge.onStatus((status) => {
+        const wasOpen = state.conn === "open";
+        if (status !== "open") {
+          connectionEpoch++;
+          cancelRetry();
+          retryAttempt = 0;
+          retryBot = null;
+          chatReads.clear();
+        }
         dispatch({ type: "conn", status, now: now() });
         if (status === "open") {
-          if (opened) void resync().then(() => opts.onSettled?.());
+          if (opened && !wasOpen) void resync().then(() => opts.onSettled?.());
           opened = true;
         }
       });
@@ -1337,6 +1408,16 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
         for (const l of [...bridgeListeners]) l(ev);
         opts.onEvent?.(ev.session ? { ...ev, bot: folderKey(ev.bot, ev.session) } : ev, state);
         for (const fn of [...eventFns]) fn(ev);
+        if (ev.event === "bot.status" && !ev.session && ev.bot === state.selectedBot && state.conn === "open") {
+          const chat = state.chats[ev.bot];
+          if (ev.status === "online" && (!chat?.loaded || chatReadRecoverable(chat.openErrorCode))) {
+            cancelRetry();
+            void loadChat(ev.bot);
+          } else if (ev.status !== "online" && !chatReads.has(ev.bot) && retryTimer === null
+            && (!chat?.openError || chatReadRecoverable(chat.openErrorCode))) {
+            scheduleRetry(ev.bot, ev.status === "starting" ? "gateway_starting" : "bot_offline");
+          }
+        }
         if (ev.event === "elsewhere.update") void loadElsewhere(ev.bot);
         // After a turn the person pointed at a thread, re-read the places so the bot's new reply shows there.
         if (ev.event === "turn.end" && lastUserReplied(state, ev.bot)) void loadElsewhere(ev.bot);
@@ -1362,7 +1443,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
           dispatch({ type: "ui.restore", ui: { panelOpen, panelTab, runsFull, runId, session } });
         } else if (back?.session) dispatch({ type: "ui.session", id: back.session });
         // Load the other chats too, so the sidebar can show previews and unread counts.
-        await Promise.allSettled(
+        void Promise.allSettled(
           bots.filter((b) => b.name !== first && online(b)).map((b) => loadChat(b.name)),
         );
       } catch (e) {
@@ -1375,7 +1456,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     async send(text) {
       const bot = state.selectedBot;
       const t = text.trim();
-      if (!bot || !t) return;
+      if (!bot || !t || chatStarting(bot)) return;
       const id = `local-${++localSeq}`;
       const chip = state.replyTo[bot] ?? null;
       const reply = chip ? { source: chip.source, label: chip.place } : undefined;
@@ -1394,7 +1475,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     },
     async sendWithFiles(text, files) {
       const bot = state.selectedBot;
-      if (!bot) return;
+      if (!bot || chatStarting(bot)) return;
       if (!files.length) return actions.send(text);
       const results: AttachResult[] = [];
       for (const f of files) {

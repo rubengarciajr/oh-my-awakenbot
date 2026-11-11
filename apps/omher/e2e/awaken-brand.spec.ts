@@ -96,6 +96,7 @@ test("corner uses the church wordmark and a slower morphing orb", async ({ page,
 test("church wordmark retains the original artwork ratio at readable size", async ({ page }) => {
   await page.goto("/");
   const logo = page.getByTestId("sidebar").getByRole("img", { name: "Awaken Church" });
+  await logo.evaluate((el) => (el as HTMLImageElement).decode());
   const size = await logo.evaluate((el) => {
     const img = el as HTMLImageElement;
     const box = img.getBoundingClientRect();
