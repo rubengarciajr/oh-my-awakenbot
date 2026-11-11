@@ -82,6 +82,9 @@
 [data-platform="mac"] .window-controls:hover svg,
 [data-platform="mac"] .window-control:focus-visible svg { opacity: 1; }
 [data-platform="mac"] .window-chrome-name { padding-left: 0; padding-right: 92px; }
+/* The native macOS traffic lights occupy the leading edge of the transparent overlay. */
+[data-native-mac] .window-drag-region { padding-inline: 92px; }
+[data-native-mac] .window-chrome-name { padding: 0; }
 .desktop-content {
   position: relative;
   flex: 1;

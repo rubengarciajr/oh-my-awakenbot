@@ -3,6 +3,7 @@
 // Grok is the agent that opens as a terminal (the others open as chats: e2e/sessions-chat.spec.ts), so
 // these tests install it in the mock host.
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -517,10 +518,10 @@ test("the terminal follows the light theme", async ({ page }) => {
   expect(await page.locator(".xterm-viewport").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
   const bg = () => page.locator(".xterm-scrollable-element").evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(await bg()).toBe("rgb(11, 9, 13)");
-  await page.evaluate(async () => {
-    const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-    m.getStore().actions.setTheme("light");
-  });
+  const session = await page.getByTestId("terminal").getAttribute("data-session");
+  await chooseTheme(page, "light");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByTestId(`session-${session}`).locator(".ss-open").click();
   await expect.poll(bg).toBe("rgb(255, 255, 255)");
 });
 
@@ -543,10 +544,7 @@ test("screenshots: sidebar with sessions and an open session, dark and light", a
   await expect(page.getByTestId("bubble-user").first()).toBeVisible();
   await settle(page);
   await page.screenshot({ path: join(SHOTS, "chat-dark.png") });
-  await page.evaluate(async () => {
-    const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-    m.getStore().actions.setTheme("light");
-  });
+  await chooseTheme(page, "light");
   await settle(page);
   await page.screenshot({ path: join(SHOTS, "chat-light.png") });
   await page.locator("[data-testid=session-list] .ss-row").first().locator(".ss-open").click();

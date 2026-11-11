@@ -1,16 +1,45 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
-test("native window removes decorations and grants only the needed window actions", () => {
+test("Windows stays undecorated while macOS keeps native overlay controls and dimensions", () => {
   const config = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
+  const macConfig = JSON.parse(readFileSync("src-tauri/tauri.macos.conf.json", "utf8"));
   const capability = JSON.parse(readFileSync("src-tauri/capabilities/default.json", "utf8"));
   expect(config.productName).toBe("Awaken Bot");
   expect(config.app.windows[0]).toMatchObject({ decorations: false, title: "Awaken Bot", backgroundColor: "#111214" });
+  // Platform config arrays replace the base array: every shared window setting must remain present.
+  expect(macConfig.app.windows).toEqual([{
+    ...config.app.windows[0], decorations: true, titleBarStyle: "Overlay", hiddenTitle: true,
+  }]);
   expect(capability.windows).toEqual(["main"]);
   expect(capability.permissions.filter((permission: string) => permission.startsWith("core:window:"))).toEqual([
     "core:window:allow-close", "core:window:allow-minimize",
     "core:window:allow-toggle-maximize", "core:window:allow-start-dragging",
   ]);
+});
+
+test("native macOS delegates traffic lights to the OS without duplicate HTML buttons", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("omher.theme", "dark");
+    Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" });
+    Object.assign(window, {
+      __TAURI_INTERNALS__: {
+        invoke: async () => null,
+        transformCallback: () => 0,
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      },
+      __OMHER_GATE__: { status: async () => ({ state: "starting" }) },
+    });
+  });
+  await page.goto("/");
+  const chrome = page.getByTestId("window-chrome");
+  await expect(chrome).toBeVisible();
+  await expect(page.locator(".desktop-shell")).toHaveAttribute("data-native-mac", "true");
+  await expect(chrome.locator(".window-controls")).toHaveCount(0);
+  await expect(chrome.getByRole("button")).toHaveCount(0);
+  await expect(chrome.locator("[data-tauri-drag-region]").first()).toBeVisible();
+  await expect(chrome).toHaveCSS("background-color", "rgb(17, 18, 20)");
+  await expect(chrome.locator(".window-chrome-name")).toHaveCSS("padding-right", "0px");
 });
 
 test("ordinary browser preview has no native window controls", async ({ page }) => {

@@ -1,5 +1,6 @@
 // Shell: sidebar, timeline bubbles, composer send/stop, theme, header right side, screenshots.
 import { expect, test, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,13 +28,6 @@ async function mock(op: string, params: Record<string, unknown> = {}): Promise<a
   ws.close();
   expect(reply.ok, JSON.stringify(reply)).toBe(true);
   return reply.result;
-}
-
-async function setTheme(page: Page, theme: "system" | "dark" | "light") {
-  await page.evaluate(async (t) => {
-    const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-    m.getStore().actions.setTheme(t);
-  }, theme);
 }
 
 async function open(page: Page) {
@@ -145,7 +139,7 @@ test("header right holds only the model pill; name toggles the details column", 
   await expect.poll(async () => Math.round((await details.boundingBox())?.width ?? 0)).toBeLessThan(2);
 });
 
-test("theme follows the store; dark and light screenshots", async ({ page }) => {
+test("theme follows the selected preference; dark and light screenshots", async ({ page }) => {
   mkdirSync(SHOTS, { recursive: true });
   await page.emulateMedia({ colorScheme: "dark" });
   await page.addInitScript(() => localStorage.removeItem("omher.theme"));
@@ -158,8 +152,7 @@ test("theme follows the store; dark and light screenshots", async ({ page }) => 
   await page.getByTestId("composer").blur();
   await page.screenshot({ path: join(SHOTS, "shell-dark.png") });
 
-  // The store's setTheme (same module instance the app uses; Vite serves it by URL).
-  await setTheme(page, "light");
+  await chooseTheme(page, "light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(page.getByTestId("bubble-user").first()).toBeVisible();
   const bg = await page.getByTestId("bubble-bot").first().locator(".b").evaluate((el) => getComputedStyle(el).backgroundColor);
@@ -170,7 +163,7 @@ test("theme follows the store; dark and light screenshots", async ({ page }) => 
 
   // persisted, and "system" follows the OS live
   expect(await page.evaluate(() => localStorage.getItem("omher.theme"))).toBe("light");
-  await setTheme(page, "system");
+  await chooseTheme(page, "system");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");

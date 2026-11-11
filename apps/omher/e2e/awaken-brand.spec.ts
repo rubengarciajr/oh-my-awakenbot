@@ -103,5 +103,10 @@ test("church wordmark retains the original artwork ratio at readable size", asyn
   });
   expect(size.natural).toBeCloseTo(1039 / 119, 4);
   expect(size.ratio).toBeCloseTo(size.natural, 2);
-  expect(size.height).toBeGreaterThanOrEqual(15);
+  expect(size.height).toBeGreaterThanOrEqual(18);
+  const artwork = await logo.boundingBox();
+  const add = await page.getByRole("button", { name: "Add a bot", exact: true }).boundingBox();
+  expect(artwork!.x + artwork!.width).toBeLessThanOrEqual(add!.x);
+  mkdirSync("e2e/__shots__", { recursive: true });
+  await page.locator(".side-top").screenshot({ path: "e2e/__shots__/awaken-church-header.png", animations: "allow" });
 });

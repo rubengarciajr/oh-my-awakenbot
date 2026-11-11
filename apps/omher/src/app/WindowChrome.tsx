@@ -18,8 +18,11 @@ export function WindowChrome({ children }: { children: ReactNode }) {
   const [maximized, setMaximized] = useState(false);
   const mac = /Macintosh|Mac OS X/.test(navigator.userAgent);
   const desktop = "__TAURI_INTERNALS__" in window || !!window.__AWAKEN_DESKTOP__;
+  // macOS keeps its native rounded window and traffic lights under an overlay titlebar.
+  const nativeMac = mac && "__TAURI_INTERNALS__" in window;
 
   useEffect(() => {
+    if (nativeMac) return;
     const current = nativeWindow();
     if (!current) return;
     let alive = true;
@@ -35,7 +38,7 @@ export function WindowChrome({ children }: { children: ReactNode }) {
       else stop();
     }, () => {});
     return () => { alive = false; unlisten?.(); };
-  }, []);
+  }, [nativeMac]);
 
   const act = async (action: "close" | "minimize" | "toggleMaximize") => {
     const current = nativeWindow();
@@ -72,14 +75,15 @@ export function WindowChrome({ children }: { children: ReactNode }) {
   );
 
   return (
-    <div className="desktop-shell" data-platform={mac ? "mac" : "desktop"} data-native={desktop || undefined}>
+    <div className="desktop-shell" data-platform={mac ? "mac" : "desktop"} data-native={desktop || undefined}
+      data-native-mac={nativeMac || undefined}>
       {desktop && <header className="window-chrome" data-testid="window-chrome">
         <div className="window-drag-region" data-tauri-drag-region>
           <span className="window-chrome-name" data-tauri-drag-region>AWAKEN BOT</span>
         </div>
-        <div className="window-controls" role="group" aria-label={t("window.controls")}>
+        {!nativeMac && <div className="window-controls" role="group" aria-label={t("window.controls")}>
           {mac ? <>{close}{minimize}{maximize}</> : <>{minimize}{maximize}{close}</>}
-        </div>
+        </div>}
       </header>}
       <div className="desktop-content">{children}</div>
     </div>

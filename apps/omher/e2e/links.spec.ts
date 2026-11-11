@@ -2,6 +2,7 @@
 // their channel when the bot knows it), a link with its own text keeps it after the mark, a lookalike host
 // stays a plain link, clicks go through the opener, and a chip never makes its line taller.
 import { expect, test, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import LINKS from "./fixtures/links.json" with { type: "json" };
 
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
@@ -153,10 +154,7 @@ test("labels are readable at rest and ink on hover; no pill fill at rest", async
     return (x + 0.05) / (y + 0.05);
   };
   for (const theme of ["dark", "light"] as const) {
-    await page.evaluate(async (t) => {
-      const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-      m.getStore().actions.setTheme(t);
-    }, theme);
+    await chooseTheme(page, theme);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await page.mouse.move(1, 1);
     await page.waitForTimeout(300); // the colour eases over 0.12s after the theme switch

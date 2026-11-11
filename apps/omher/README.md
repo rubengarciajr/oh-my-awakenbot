@@ -35,8 +35,9 @@ confirmation, cost and context warnings appear inside the picker. A choice made 
 is applied after that turn; the picker follows Hermes’ model events. Failed requests keep the old
 selection and show the actual error. Model changes do not send a chat message.
 
-Native windows use a borderless off-black titlebar with drag support and close/minimize/maximize
-controls for Mac and Windows, available during launch and setup too.
+Native windows use an off-black draggable title area, available during launch and setup too.
+macOS overlays this area with native traffic lights and keeps its rounded window corners and
+standard window-manager behavior. Windows uses an undecorated window with custom controls.
 
 ## Branding and launch
 
