@@ -2,6 +2,7 @@
 // else the agent's own title, else a summary of the first message, else the folder), line 2 the folder and the
 // agent. Double-click the name or right-click › Rename to name it; Enter saves, Esc cancels, empty = automatic.
 import { expect, test, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -154,17 +155,25 @@ test("the title Claude Code wrote in its own session file arrives after a turn (
 });
 
 test("an oh-my-hermes session takes the title Hermes gives the folder chat", async ({ page }) => {
+  let fid: string | undefined;
+  page.on("websocket", (socket) => {
+    const opens = new Set<string>();
+    socket.on("framesent", ({ payload }) => {
+      const frame = JSON.parse(String(payload));
+      if (frame.op === "folder.open") opens.add(frame.id);
+    });
+    socket.on("framereceived", ({ payload }) => {
+      const frame = JSON.parse(String(payload));
+      if (opens.has(frame.id) && frame.ok) fid = frame.result.session;
+    });
+  });
   await open(page);
   await start(page, "omh", "/Users/you/work/api");
   const row = rows(page).first();
   await expect(row.getByTestId("session-name")).toHaveText("api");
   const opened = ((await mock("mock.calls")).calls as { op: string; params: Record<string, unknown> }[]).find((c) => c.op === "folder.open")!;
   expect(opened).toBeTruthy();
-  const fid = await page.evaluate(async () => {
-    const m = await import(/* @vite-ignore */ "/src/sessions/sessions.ts");
-    const s = m.getSessions();
-    return s.getState().list[0].agentSession as string;
-  });
+  await expect.poll(() => fid).toBeTruthy();
   await mock("mock.emit", { events: [{ event: "session.title", bot: "kami", session: fid, title: "Audit the API routes" }] });
   await expect(row.getByTestId("session-name")).toHaveText("Audit the API routes");
   await expect(row.getByTestId("session-sub")).toHaveText("api · oh-my-hermes");
@@ -236,7 +245,7 @@ for (const theme of ["dark", "light"] as const) {
     test.skip(!SHOTS, "set OMHER_SHOTS to a folder to save screenshots");
     mkdirSync(SHOTS, { recursive: true });
     await open(page);
-    await page.evaluate(async (t) => (await import(/* @vite-ignore */ "/src/state/store.ts")).getStore().actions.setTheme(t), theme);
+    await chooseTheme(page, theme);
     await start(page, "claude", "/Users/you/code/web-app");
     await say(page, "Fix the login redirect loop after OAuth sign-in. It started after the last deploy.");
     await say(page, "/title Fix OAuth login redirect loop");

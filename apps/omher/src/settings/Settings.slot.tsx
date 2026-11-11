@@ -14,6 +14,7 @@ import { reasoningLabel } from "../chat/model/levels";
 import { Appearance } from "./Appearance";
 import { AccountsPage } from "./accounts/AccountsPage";
 import { ProvidersPage } from "./providers/ProvidersPage";
+import { ReplyPerformance } from "./ReplyPerformance";
 import { AvatarEditor, BotFacts, NameEditor, PictureActions, placeName, useBotInfo, usePictureEditor } from "./BotIdentity";
 
 export const slot = "settings";
@@ -442,6 +443,7 @@ function ComputerPage() {
           </Value>
         </Row>
       </div>
+      <ReplyPerformance />
     </div>
   );
 }

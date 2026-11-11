@@ -201,7 +201,7 @@ test("screenshots: media in the chat, dark and light", async ({ page }) => {
   mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ colorScheme: "dark" });
-  await page.addInitScript(() => localStorage.removeItem("omher.theme"));
+  await page.addInitScript(() => localStorage.setItem("omher.theme", "system"));
   const tl = await openHermes(page);
   await expect.poll(() => tl.getByTestId("media-video").evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(1);
   await expect.poll(() => tl.getByTestId("media-loading").count()).toBe(0);

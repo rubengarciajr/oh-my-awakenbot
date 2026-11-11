@@ -663,7 +663,7 @@
   padding: 0 10px;
   border-radius: var(--r);
   background: var(--g-accent);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 12px;
   font-weight: 560;
   flex: none;

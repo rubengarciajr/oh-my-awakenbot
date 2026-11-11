@@ -1,0 +1,37 @@
+.launch-content { height: 100%; }
+.launch-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 50% 42%, #2b2e32 0%, transparent 56%),
+    radial-gradient(ellipse at 15% 90%, #1a1c20 0%, transparent 60%),
+    #101113;
+}
+.launch-screen[data-background="quiet-studio"] {
+  background:
+    radial-gradient(ellipse at 70% 20%, #353a43 0%, transparent 70%),
+    linear-gradient(140deg, #292e36, #101317 85%);
+}
+.launch-orb {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  transform: translate(-50%, -50%);
+  display: block;
+  width: min(45vw, 78vh);
+  height: auto;
+  aspect-ratio: 1;
+}
+.launch-wordmark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(44% + min(22.5vw, 39vh) + 28px);
+  text-align: center;
+  color: #f3f1ec;
+  font: 400 clamp(12px, 1.4vw, 18px) / 1.4 var(--font);
+  letter-spacing: 0.23em;
+  padding-left: 0.23em;
+}

@@ -106,6 +106,21 @@
 .ab-new:disabled {
   opacity: 0.7;
 }
+.ab-new:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.ab-form { max-height: min(700px, calc(100vh - 90px)); overflow-y: auto; }
+.ab-form fieldset { border: 0; padding: 0 6px; margin: 0; min-width: 0; }
+.ab-form label { display: flex; flex-direction: column; gap: 5px; margin-top: 12px; font-size: 12px; color: var(--ink); }
+.ab-form input, .ab-form select, .ab-form textarea {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--raise2); color: var(--ink); padding: 8px; font: inherit;
+}
+.ab-form textarea { resize: vertical; }
+.ab-form input:focus-visible, .ab-form select:focus-visible, .ab-form textarea:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
+.ab-hint { font-size: 11px; line-height: 1.5; color: var(--quiet); margin: 6px 0 0; }
+.ab-error { font-size: 12px; line-height: 1.5; color: var(--danger); margin: 12px 6px 0; }
+.ab-actions { display: flex; justify-content: space-between; gap: 10px; margin: 16px 6px 6px; }
+.ab-actions .ab-btn { height: 32px; }
+.ab-submit { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); }
 .ab-soon {
   margin-left: auto;
   font-size: 10px;

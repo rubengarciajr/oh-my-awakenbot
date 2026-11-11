@@ -14,6 +14,8 @@ import { AutomationsPage } from "../pages/Automations";
 import { PluginsPage } from "../pages/Plugins";
 import { useLookAttributes, useThemeAttribute } from "./theme";
 import { useShortcuts } from "./shortcuts";
+import { AccountLoading } from "./AccountLoading";
+import { accountIsLoading } from "./accountLoadingState";
 
 // The terminal view (and xterm with it) loads when a session is first opened.
 const SessionView = lazy(() => import("../sessions/SessionView").then((m) => ({ default: m.SessionView })));
@@ -48,10 +50,11 @@ export function App() {
   const panelOpen = s.ui.panelOpen && s.ui.view === "chat" && !!bot;
   const Details = slots.detailsPanel;
   const close = () => s.togglePanel(false);
+  const loading = accountIsLoading(s);
 
   return (
     <MentionContext.Provider value={mentions}>
-    <div className={`window${panelOpen ? " panel-open" : ""}`} data-testid="window" lang={s.ui.lang}>
+    <div className={`window${panelOpen ? " panel-open" : ""}`} data-testid="window" lang={s.ui.lang} aria-busy={loading || undefined}>
       <Sidebar />
       <main className="main">
         {s.ui.view === "settings" ? <SettingsView /> : s.ui.view === "automations" ? (
@@ -74,6 +77,7 @@ export function App() {
           ))}
       </aside>
     </div>
+    <AccountLoading visible={loading} />
     </MentionContext.Provider>
   );
 }

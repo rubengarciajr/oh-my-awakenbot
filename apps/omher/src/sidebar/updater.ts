@@ -1,5 +1,5 @@
 // In-app updates. The Tauri shell's updater plugin reads one fixed endpoint (tauri.conf.json:
-// the `omher-latest` release's latest.json on GitHub) and installs only a build signed with the key whose
+// the `awakenbot-latest` release's latest.json on GitHub) and installs only a build signed with the key whose
 // public half is pinned there. Outside Tauri (browser dev, e2e) there is no updater, unless the page sets
 // `window.__omherUpdateHost`, the e2e stand-in.
 import { t } from "../i18n";

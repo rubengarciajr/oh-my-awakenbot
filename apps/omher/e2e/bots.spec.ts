@@ -147,6 +147,9 @@ test("bot page: what the bot has done (sessions per place, skills, routines)", a
 
 test("All bots: a card per bot with status, model and places; search filters; a card opens the bot", async ({ page }) => {
   await open(page);
+  await expect(page.getByTestId("bubble-user").first()).toBeVisible();
+  // chat.open is authoritative about idleness; a running card needs an observed turn.
+  await mock("mock.emit", { events: [{ event: "turn.start", bot: "kami" }] });
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-bots").click();
   const grid = page.getByTestId("bots-grid");

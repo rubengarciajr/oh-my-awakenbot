@@ -4,8 +4,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg, #0b090d);
-  color: var(--body, #dcd6de);
+  background: var(--bg, #111214);
+  color: var(--body, #d8d6d0);
   font-size: 13px;
 }
 .gate-box {
@@ -20,12 +20,12 @@
 .gate-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--ink, #f3eff4);
+  color: var(--ink, #f3f1ec);
 }
 .gate-error {
   margin: 0;
   font-size: 12px;
-  color: var(--muted, #9a929d);
+  color: var(--muted, #a7a8af);
   overflow-wrap: anywhere;
 }
 .gate-retry {
@@ -33,13 +33,13 @@
   padding: 0 14px;
   border: 0;
   border-radius: var(--r-sm, 4px);
-  background: var(--seg-on, #3d3843);
-  color: var(--ink, #f3eff4);
+  background: var(--seg-on, #44464e);
+  color: var(--ink, #f3f1ec);
   font: inherit;
   cursor: pointer;
 }
 .gate-retry:hover:not(:disabled) {
-  background: var(--raise2, #232026);
+  background: var(--raise2, #2a2b30);
 }
 .gate-retry:disabled {
   opacity: 0.5;
@@ -52,19 +52,21 @@
   max-width: none;
   gap: 14px;
 }
-.gate-mark {
+.orb-mark.gate-mark {
+  width: 44px;
+  height: 44px;
   display: block;
   margin-bottom: 2px;
 }
 .gate-head {
   font-size: 15px;
   font-weight: 600;
-  color: var(--ink, #f3eff4);
+  color: var(--ink, #f3f1ec);
 }
 .gate-text {
   margin: 0;
   max-width: 100%;
-  color: var(--body, #c9c2cc);
+  color: var(--body, #d8d6d0);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -78,10 +80,10 @@
   right: 6px;
   height: 22px;
   padding: 0 8px;
-  border: 1px solid var(--line, #29252c);
+  border: 1px solid var(--line, #323338);
   border-radius: var(--r-sm, 4px);
-  background: var(--raise2, #232026);
-  color: var(--body, #dcd6de);
+  background: var(--raise2, #2a2b30);
+  color: var(--body, #d8d6d0);
   font: 500 12px/1 var(--font, system-ui);
   cursor: pointer;
 }
@@ -94,9 +96,9 @@
   box-sizing: border-box;
   padding: 8px 64px 8px 10px;
   border-radius: var(--r-sm, 4px);
-  background: var(--raise, #1b181e);
-  color: var(--body, #dcd6de);
-  border: 1px solid var(--line, #29252c);
+  background: var(--raise, #202125);
+  color: var(--body, #d8d6d0);
+  border: 1px solid var(--line, #323338);
   font: 12px/1.55 var(--mono, ui-monospace, monospace);
   text-align: left;
   /* break at the spaces around the pipe, never inside the URL */
@@ -112,10 +114,10 @@
   margin: 0;
   padding: 8px 10px;
   overflow: auto;
-  border: 1px solid var(--line, #29252c);
+  border: 1px solid var(--line, #323338);
   border-radius: var(--r-sm, 4px);
-  background: var(--page, #050406);
-  color: var(--body, #dcd6de);
+  background: var(--page, #0c0c0e);
+  color: var(--body, #d8d6d0);
   font: 12px/1.5 var(--mono, ui-monospace, monospace);
   text-align: left;
   white-space: normal;
@@ -133,7 +135,7 @@
   color: var(--danger, #f08a8a);
 }
 .gate-line--ok {
-  color: var(--muted, #9a929d);
+  color: var(--muted, #a7a8af);
 }
 .gate-tok {
   white-space: pre;
@@ -153,12 +155,12 @@
   gap: 6px;
   height: 28px;
   padding: 0 18px;
-  background: var(--ink, #f3eff4);
-  color: var(--bg, #0b090d);
+  background: var(--ink, #f3f1ec);
+  color: var(--bg, #111214);
   font-weight: 600;
 }
 .gate-primary:hover:not(:disabled) {
-  background: var(--body, #dcd6de);
+  background: var(--body, #d8d6d0);
 }
 .gate-primary:disabled {
   opacity: 0.7;
@@ -166,8 +168,8 @@
 .gate-quiet {
   height: 28px;
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--line-strong, #3d3640);
-  color: var(--body, #dcd6de);
+  box-shadow: inset 0 0 0 1px var(--line-strong, #4b4d54);
+  color: var(--body, #d8d6d0);
 }
 .gate-quiet:hover:not(:disabled) {
   background: var(--hover, rgba(255, 255, 255, 0.03));
@@ -175,12 +177,12 @@
 .gate-note {
   margin: 0;
   font-size: 12px;
-  color: var(--body, #c9c2cc);
+  color: var(--body, #d8d6d0);
   opacity: 0.85;
 }
 .gate-note code {
   font: 12px var(--mono, ui-monospace, monospace);
-  color: var(--body, #dcd6de);
+  color: var(--body, #d8d6d0);
 }
 .gate-spin {
   width: 10px;

@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import re
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +37,7 @@ RULES = (
     "The bridge listens on 127.0.0.1 only and refuses any connection that lacks the random token",
     "The app starts the bridge as a child process and stops it when the app exits.",
     "The Python `omh` package never imports omher, and nothing under `src/` refers to `apps/omher`.",
-    "omher writes to a Hermes profile only its display name (`profile.yaml` `display_name`) and its picture",
+    "omher writes to an existing Hermes profile only its display name (`profile.yaml` `display_name`) and its picture",
     "Outside Hermes, omher reads only the usage records coding CLIs write about themselves",
     "it never reads their auth files or tokens, writes nothing there and sends nothing anywhere.",
     "Accounts (Settings › Accounts) are the one exception to rules 4, 10 and 17.",
@@ -115,11 +116,16 @@ RULES = (
     "A session's folder is removed when the session is closed, and the folders of sessions that are no longer in the list"
     " are removed when omher starts.",
     "An oh-my-hermes session takes no files: rule 3 keeps files to a bot's main chat.",
+    "Only after the person presses Create a bot, omher asks the selected source bot's own gateway",
+    "through Hermes' `profiles.create`, with `clone_from` naming that source, `clone_all: false`,",
+    "`clone_channels: false`, `mirror_credentials: false` and `no_alias: true`.",
+    "omher never copies chat history, automations or channel bot credentials.",
+    "Nothing creates a bot on launch, on opening the form, or from a settings-source selection;",
 )
 TAURI_CONF = ROOT / "apps" / "omher" / "src-tauri" / "tauri.conf.json"
 CAPABILITIES = ROOT / "apps" / "omher" / "src-tauri" / "capabilities" / "default.json"
 UI_SRC = ROOT / "apps" / "omher" / "src"
-UPDATE_ENDPOINT = "https://github.com/rlaope/oh-my-hermes/releases/download/omher-latest/latest.json"
+UPDATE_ENDPOINT = "https://github.com/rubengarciajr/oh-my-awakenbot/releases/download/awakenbot-latest/latest.json"
 SETUP_RS = ROOT / "apps" / "omher" / "src-tauri" / "src" / "setup.rs"
 SHELL_SRC = ROOT / "apps" / "omher" / "src-tauri" / "src"
 # The shell's fixed run: the documented one-liner, downloaded to a temp file first so a failed download
@@ -151,7 +157,7 @@ class DocPins(unittest.TestCase):
         for sentence in RULES:
             self.assertIn(_flat(sentence), text)
 
-    def test_boundary_is_between_six_and_twenty_six_numbered_rules(self) -> None:
+    def test_boundary_is_between_six_and_twenty_eight_numbered_rules(self) -> None:
         # 22: rule 10 (the bridge's read-only git, side panel), rule 11 (SESSIONS' allow-listed agents),
         # rule 12 (the one installer), rule 13 (media.read), rules 14-16 (Plans: dag records, delegation and
         # route reads, CLI agents' session files), rule 17 (CLI usage records), rule 18 (accounts), rule 19
@@ -161,9 +167,11 @@ class DocPins(unittest.TestCase):
         # the key), rule 24 (Automations: a bot's jobs changed only through its own `cron.manage`) and rule 25
         # (Plugins: only through its own `plugins.manage`, catalog installs after an inspect) each widened the
         # boundary on purpose; 26: rule 26 (SESSIONS attachments saved under ~/.omher/session-files) did too.
+        # 27: explicit Create Bot through Hermes' own config-only profile clone.
         # The rules stay numbered 1..n with no gap or repeat.
         rules = re.findall(r"^(\d+)\. ", DOC.read_text(encoding="utf-8"), re.M)
-        self.assertTrue(6 <= len(rules) <= 26, len(rules))
+        # Rule 28 adds bounded, local duration observations and read-only display paging.
+        self.assertTrue(6 <= len(rules) <= 28, len(rules))
         self.assertEqual([int(n) for n in rules], list(range(1, len(rules) + 1)))
 
     def test_glossary_and_docs_index_name_omher(self) -> None:
@@ -190,12 +198,14 @@ class SignedSelfUpdateFromOneAddress(unittest.TestCase):
         self.assertIs(conf["bundle"]["createUpdaterArtifacts"], True)
         self.assertIn(f"`{UPDATE_ENDPOINT}`", DOC.read_text(encoding="utf-8"))
 
-    def test_capabilities_add_only_the_updater_and_restart(self) -> None:
+    def test_capabilities_add_only_window_controls_updater_and_restart(self) -> None:
         import json
 
         perms = json.loads(CAPABILITIES.read_text(encoding="utf-8"))["permissions"]
-        self.assertEqual(perms, ["core:default", "notification:default", "dialog:allow-open",
-                                 "updater:default", "process:allow-restart"])
+        self.assertEqual(perms, ["core:default", "core:window:allow-close", "core:window:allow-minimize",
+                                "core:window:allow-toggle-maximize", "core:window:allow-start-dragging",
+                                "notification:default", "dialog:allow-open",
+                                "updater:default", "process:allow-restart"])
 
     def test_only_the_sidebar_updater_module_imports_the_updater(self) -> None:
         users = sorted(
@@ -343,14 +353,32 @@ class BridgeSubmitsOnlyToTheMainChat(unittest.TestCase):
         params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
         self.assertNotIn("session_id", params, "the submitting function must not take a session id from its caller")
 
-    def test_profile_writes_are_only_name_and_picture(self) -> None:
-        """Every Hermes profile method the bridge names is a read, except set_asset (the avatar)."""
+    def test_profile_writes_are_only_name_picture_and_explicit_creation(self) -> None:
+        """Rule 27 adds one explicit safe creation call to the presentation writes."""
         names = {n.value for n in ast.walk(self.tree)
                  if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.startswith("profiles.")}
-        self.assertTrue(names <= {"profiles.list", "profiles.set_asset"}, sorted(names))
+        self.assertTrue(names <= {"profiles.list", "profiles.set_asset", "profiles.create"}, sorted(names))
         writes = {n.value for n in ast.walk(self.tree)
                   if isinstance(n, ast.Constant) and n.value in {"profiles.configure", "profiles.create", "profile.yaml"}}
-        self.assertEqual(writes, {"profile.yaml"})  # named only by the display-name writer
+        self.assertEqual(writes, {"profile.yaml", "profiles.create"})
+
+    def test_creation_has_one_closed_config_only_clone_call(self) -> None:
+        calls = [n for n in ast.walk(self.tree) if isinstance(n, ast.Call) and any(
+            isinstance(a, ast.Constant) and a.value == "profiles.create" for a in n.args)]
+        self.assertEqual(len(calls), 1)
+        flags = {k.arg: ast.literal_eval(k.value) for k in calls[0].keywords
+                 if k.arg in {"clone_all", "clone_channels", "mirror_credentials", "no_alias"}}
+        self.assertEqual(flags, {"clone_all": False, "clone_channels": False,
+                                 "mirror_credentials": False, "no_alias": True})
+        create = next(n for n in ast.walk(self.tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "op_bots_create")
+        body = ast.unparse(create)
+        self.assertIn("os.path.lexists(target)", body)
+        self.assertIn("async with self._create_lock", body)
+        self.assertNotIn("result['path']", body)
+        form = (UI_SRC / "addbot" / "CreateBot.tsx").read_text(encoding="utf-8")
+        self.assertEqual(form.count("await createBot("), 1)
+        self.assertIn("onSubmit=", form)
+        self.assertNotIn("useEffect", form)
 
     def test_folder_chats_come_only_from_session_create_with_a_folder(self) -> None:
         """A folder chat id is minted by the bridge (``folder.open`` → ``session.create`` with the picked cwd);
@@ -498,7 +526,9 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("omher_bridge_boundary", BRIDGE)
         ob = importlib.util.module_from_spec(spec)
         sys.modules["omher_bridge_boundary"] = ob
-        spec.loader.exec_module(ob)
+        # Match a packaged script's import path, including its bundled timing helper.
+        with mock.patch.object(sys, "path", [str(BRIDGE.parent), *sys.path]):
+            spec.loader.exec_module(ob)
         rnd = random.Random(12)
         secret = "sk-SECRET-boundary"
         for round_ in range(25):
@@ -550,7 +580,8 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("omher_bridge_cpa", BRIDGE)
         ob = importlib.util.module_from_spec(spec)
         sys.modules["omher_bridge_cpa"] = ob
-        spec.loader.exec_module(ob)
+        with mock.patch.object(sys, "path", [str(BRIDGE.parent), *sys.path]):
+            spec.loader.exec_module(ob)
         secret = "sk-ant-oat01-BOUNDARY"
         with tempfile.TemporaryDirectory() as d:
             home = Path(d)

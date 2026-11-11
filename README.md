@@ -1,3 +1,13 @@
+# AWAKEN BOT
+
+The macOS and Windows desktop fork of oh-my-hermes, with the AWAKEN orb, five-second launch animation,
+and an off-black/off-white dark theme. [Desktop setup, builds and releases](apps/omher/README.md).
+[AWAKEN BOT downloads](https://github.com/rubengarciajr/oh-my-awakenbot/releases).
+
+The upstream harness documentation follows. Hermes and oh-my-hermes retain their original engine names.
+
+---
+
 <div align="center">
 
 ### OMHER Desktop

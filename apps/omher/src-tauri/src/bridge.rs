@@ -255,6 +255,8 @@ pub fn resolve_script<X: Fn(&Path) -> bool>(
 
 pub fn bridge_args(script: &Path, token: &str) -> Vec<String> {
     vec![
+        // Imports must not add __pycache__ resources inside the signed application bundle.
+        "-B".into(),
         script.display().to_string(),
         "--port".into(),
         "0".into(),
@@ -793,7 +795,7 @@ mod tests {
     #[test]
     fn child_args_ask_for_a_free_port_and_stdin_eof_exit() {
         let a = bridge_args(Path::new("/b/omher_bridge.py"), "abc");
-        assert_eq!(a, ["/b/omher_bridge.py", "--port", "0", "--token", "abc", "--exit-on-stdin-eof"]);
+        assert_eq!(a, ["-B", "/b/omher_bridge.py", "--port", "0", "--token", "abc", "--exit-on-stdin-eof"]);
     }
 
     #[test]

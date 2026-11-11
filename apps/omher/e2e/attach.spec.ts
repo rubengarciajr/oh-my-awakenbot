@@ -214,7 +214,7 @@ test("over-limit files show a red chip and are not sent; a failed attach sends n
 test("screenshots: chips and the + menu, dark and light", async ({ page }) => {
   mkdirSync(SHOTS, { recursive: true });
   await page.emulateMedia({ colorScheme: "dark" });
-  await page.addInitScript(() => localStorage.removeItem("omher.theme"));
+  await page.addInitScript(() => localStorage.setItem("omher.theme", "system"));
   await openFriren(page);
   await page.screenshot({ path: join(SHOTS, "T2-composer-dark.png") });
   await pickFiles(page, [

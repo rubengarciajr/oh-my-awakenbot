@@ -98,7 +98,7 @@ describe("i18n", () => {
   });
 
   it("writes Simplified, not Traditional, Chinese", () => {
-    const traditional = /[們這個說時麼對會還點開關發連線帳號設處於與為將應單選擇檔顯視窗鍵輸]/;
+    const traditional = /[們這個說時麼對會還點開關發連線帳號設處於與為將應單選擇檔顯視鍵輸]/;
     for (const k of keys) expect(DICT.zh[k], k).not.toMatch(traditional);
   });
 });

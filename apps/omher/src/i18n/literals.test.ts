@@ -13,6 +13,8 @@ const SRC = join(__dirname, "..");
 const ALLOWED = new Set([
   // brand and product names
   "omher",
+  "AWAKEN BOT",
+  "Awaken Church",
   "OMH",
   "Hermes",
   // commands and sample code shown as code

@@ -1,5 +1,6 @@
 // Elsewhere: header places chip, away lines that link to their thread, Details panel (where + routines).
 import { expect, test, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -154,7 +155,7 @@ test("Details panel: identity, where the bot is, note, routines", async ({ page 
   const rows = panel.getByTestId("where-row");
   await expect(rows).toHaveCount(4);
   await expect(rows.nth(0)).toContainText("This chat");
-  await expect(rows.nth(0)).toContainText("omher");
+  await expect(rows.nth(0)).toContainText("Awaken Church");
   await expect(rows.nth(1)).toContainText("gateway 502 on /v1/responses");
   await expect(rows.nth(1)).toContainText("Slack #og-dev");
   await expect(rows.nth(1)).toContainText(/working · \d+m/);
@@ -249,10 +250,7 @@ test("screenshots: dark and light with the panel open", async ({ page }) => {
   await expect(page.getByTestId("routine-row")).toHaveCount(2);
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(SHOTS, "elsewhere-dark.png") });
-  await page.evaluate(async () => {
-    const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-    m.getStore().actions.setTheme("light");
-  });
+  await chooseTheme(page, "light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(SHOTS, "elsewhere-light.png") });

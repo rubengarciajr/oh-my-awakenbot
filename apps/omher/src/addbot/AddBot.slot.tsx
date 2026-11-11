@@ -1,6 +1,6 @@
 // Add-a-bot popover from the sidebar `+`. "Connect a Hermes profile" lists every profile the bridge sees
 // with its status; Connect attaches that profile's gateway (one read: models.options) and re-reads
-// bots.list. Nothing is copied or created on disk. "Create a new bot" is not in v0.1.
+// bots.list. Create Bot asks Hermes to make an independent profile with the chosen source's settings.
 import { useEffect, useState } from "react";
 import "./addbot.css";
 import type { SlotProps } from "../features";
@@ -10,6 +10,7 @@ import { Avatar, Popover, Spinner } from "../ui";
 import { connectProfile, refreshBots } from "./bots";
 import { t } from "../i18n";
 import { statusText } from "../settings/Settings.slot";
+import { CreateBot } from "./CreateBot";
 
 export const slot = "addBot";
 
@@ -18,6 +19,7 @@ export default function AddBot({ onClose }: SlotProps["addBot"]) {
   const s = useStore();
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<Record<string, string>>({});
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     void refreshBots(getStore()).catch(() => undefined);
@@ -38,7 +40,8 @@ export default function AddBot({ onClose }: SlotProps["addBot"]) {
   };
 
   return (
-    <Popover open onClose={onClose} align="left" width={272} label={t("ab.label")} className="ab-pop">
+    <Popover open onClose={onClose} align="left" width={creating ? "min(360px, calc(100vw - 32px))" : 272} label={t(creating ? "ab.createTitle" : "ab.label")} className="ab-pop">
+      {creating ? <CreateBot onBack={() => setCreating(false)} onClose={onClose} /> :
       <div data-testid="addbot">
         <div className="ab-h">{t("ab.title")}</div>
         <p className="ab-sub">{t("ab.sub")}</p>
@@ -75,11 +78,10 @@ export default function AddBot({ onClose }: SlotProps["addBot"]) {
           })}
         </div>
         <div className="ab-sep" />
-        <button type="button" className="ab-new" disabled title={t("ab.later")} data-testid="addbot-create">
+        <button type="button" className="ab-new" disabled={busy !== null} onClick={() => setCreating(true)} data-testid="addbot-create">
           {t("ab.create")}
-          <span className="ab-soon">{t("set.soon")}</span>
         </button>
-      </div>
+      </div>}
     </Popover>
   );
 }

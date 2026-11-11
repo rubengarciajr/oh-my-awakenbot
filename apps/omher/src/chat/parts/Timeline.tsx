@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import type { Bot } from "../../lib/protocol";
-import { selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
+import { chatReadRecoverable, selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
 import { slots } from "../../features";
 import { dayLabel, hhmm, sameDay } from "../../app/time";
 import { Bubble } from "./Bubble";
@@ -28,6 +28,8 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
   const s = useStore();
   const items = selectTimeline(s, bot.name);
   const chat = s.chats[bot.name];
+  const starting = bot.status === "starting" || chat?.openErrorCode === "gateway_starting";
+  const recovering = chatReadRecoverable(chat?.openErrorCode);
   const streaming = chat?.turn?.streaming ?? "";
   const typing = awaitingFirstToken(chat);
   // the one row of the live run that carries the bot's ringed face
@@ -35,14 +37,34 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const lastBot = useRef<string | null>(null);
+  const historyAnchor = useRef<{ bot: string; id: string; top: number } | null>(null);
+
+  const older = () => {
+    const el = ref.current;
+    if (!el || !chat?.history?.cursor || chat.history.loading || s.conn !== "open") return;
+    const top = el.getBoundingClientRect().top;
+    const row = [...el.querySelectorAll<HTMLElement>("[data-item-id]")].find((r) => r.getBoundingClientRect().bottom > top);
+    historyAnchor.current = row ? { bot: bot.name, id: row.dataset.itemId!, top: row.getBoundingClientRect().top - top } : null;
+    pinned.current = false;
+    void s.loadHistory(bot.name);
+  };
 
   // Stick to the bottom unless the person scrolled up; jump to the bottom on bot switch.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    if (lastBot.current !== bot.name || pinned.current) el.scrollTop = el.scrollHeight;
+    const anchor = historyAnchor.current;
+    if (lastBot.current !== bot.name) {
+      historyAnchor.current = null;
+      pinned.current = true;
+      el.scrollTop = el.scrollHeight;
+    } else if (anchor?.bot === bot.name && !chat?.history?.loading) {
+      const row = [...el.querySelectorAll<HTMLElement>("[data-item-id]")].find((r) => r.dataset.itemId === anchor.id);
+      if (row) el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.top;
+      historyAnchor.current = null;
+    } else if (pinned.current) el.scrollTop = el.scrollHeight;
     lastBot.current = bot.name;
-  }, [bot.name, items, streaming, typing]);
+  }, [bot.name, items, streaming, typing, chat?.history?.loading]);
 
   // Files the bot sent load after the row is drawn and make it taller: stay at the bottom if pinned.
   useEffect(() => {
@@ -100,22 +122,34 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
       onScroll={(e) => {
         const el = e.currentTarget;
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        if (el.scrollTop <= 80 && !pinned.current && !chat?.history?.error) older();
       }}
     >
-      {!chat?.loaded && items.length === 0 && <div className="day">{t("tl.loading")}</div>}
-      {chat?.openError && (
+      {chat?.history?.cursor && (
+        <div className="day history-page">
+          <button type="button" className="history-older" data-testid="history-older"
+            disabled={chat.history.loading || s.conn !== "open"} onClick={older}>
+            {t(chat.history.loading ? "tl.loadingOlder" : "tl.older")}
+          </button>
+          {chat.history.error && <span role="status">{t("tl.historyFailed", { error: chat.history.error })}</span>}
+        </div>
+      )}
+      {!chat?.loaded && items.length === 0 && !starting && <div className="day">{t("tl.loading")}</div>}
+      {starting && <div className="day note" role="status" data-testid="chat-starting">{t("tl.starting", { bot: bot.display_name })}</div>}
+      {!starting && recovering && <div className="day note" role="status" data-testid="chat-reconnecting">{t("tl.reconnecting", { bot: bot.display_name })}</div>}
+      {chat?.openError && !starting && !recovering && (
         <div className="day note" data-testid="chat-error">
           {t("tl.unreachable", { bot: bot.display_name, error: chat.openError })}
         </div>
       )}
       {/* A Hermes installed from the setup screen has no model yet: the first chat screen says where to pick one,
           never a terminal command. */}
-      {chat?.loaded && !chat.openError && !(chat.model || bot.model) && (
+      {chat?.loaded && !chat.openError && !starting && !(chat.model || bot.model) && (
         <div className="day note" data-testid="chat-no-model">
           {t("tl.noModel", { bot: bot.display_name })}
         </div>
       )}
-      {chat?.loaded && !chat.openError && items.length === 0 && <div className="day">{t("tl.sayHi", { bot: bot.display_name })}</div>}
+      {chat?.loaded && !chat.openError && !starting && items.length === 0 && <div className="day">{t("tl.sayHi", { bot: bot.display_name })}</div>}
       {items.map((it, i) => {
         // the live activity line with nothing to say yet: the typing bubble below stands in for it
         if (it.kind === "activity" && chat?.turn?.id === it.turn.id && !turnHasActivity(it.turn)) return null;
@@ -127,7 +161,7 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
         return (
           <Fragment key={it.id}>
             {label && <div className="day">{label}</div>}
-            <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind}>
+            <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind} data-item-id={it.id}>
               {liveFace && <LiveFace bot={bot.name} face={face} />}
               {render(it, label ? undefined : items[i - 1])}
             </div>

@@ -46,6 +46,8 @@ export interface Msg {
   role: "user" | "assistant";
   text: string;
   ts: number;
+  /** The gateway bounded one oversized display row; the full saved message remains in Hermes. */
+  truncated?: boolean;
   /** user rows sent with "Reply there": the thread the person pointed the bot at. */
   reply_to?: ReplyRef | null;
 }
@@ -190,6 +192,11 @@ export interface ModelCurrent {
   reasoning: string;
 }
 
+export interface ModelChangeResult extends ModelCurrent {
+  status?: "deferred";
+  confirmation?: { token: string; message: string };
+}
+
 export interface ModelOptions {
   providers: ModelProvider[];
   current: ModelCurrent;
@@ -211,6 +218,41 @@ export interface ChatOpenResult {
   model: string;
   provider: string;
   reasoning: string;
+  /** Native gateway pages, or in-memory pages of the old gateway's full resume reply. */
+  history?: { mode: "paged" | "legacy"; cursor: string | null };
+}
+
+export interface ChatHistoryResult {
+  session_id: string;
+  messages: Msg[];
+  next_cursor: string | null;
+  /** Hermes invalidated the cursor: replace the saved display window; live cards keep their state. */
+  reset: boolean;
+}
+
+/** Local durations only. Null means that stage was not observed. */
+export interface ReplyTiming {
+  trace_id: string;
+  status: string;
+  bridge_prepare_ms: number | null;
+  submit_ack_ms: number | null;
+  turn_start_ms: number | null;
+  first_progress_ms: number | null;
+  first_text_ms: number | null;
+  total_ms: number | null;
+  tools_ms: number | null;
+  provider_ms: number | null;
+  provider_first_chunk_ms: number | null;
+  provider_calls: number | null;
+  client_first_text_ms?: number | null;
+  client_submit_ack_ms?: number | null;
+}
+
+export interface PerformanceSnapshot {
+  version: 1;
+  storage: "memory";
+  limit: number;
+  recent: ReplyTiming[];
 }
 
 /** A Hermes chat the bridge created in a picked folder (SESSIONS > oh-my-hermes). */
@@ -229,9 +271,11 @@ export interface OpMap {
   hello: { params: Record<string, never>; result: HelloResult };
   "bots.list": { params: Record<string, never>; result: { bots: Bot[] } };
   "chat.open": { params: { bot: string }; result: ChatOpenResult };
+  "chat.history": { params: { bot: string; cursor: string }; result: ChatHistoryResult };
+  "performance.read": { params: Record<string, never>; result: PerformanceSnapshot };
   /** `reply_to` = an elsewhere session id: the bridge adds that thread as context for the bot.
    *  omher posts nothing. */
-  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string }; result: { input_id: string } };
+  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string }; result: { input_id: string; trace_id?: string; admission_id?: string } };
   "chat.interrupt": { params: { bot: string; session?: string }; result: Record<string, never> };
   "approval.respond": {
     params: { bot: string; request_id: string; choice: ApprovalChoice; session?: string };
@@ -280,10 +324,14 @@ export interface OpMap {
   "plugins.remove": { params: { bot: string; name: string }; result: { name: string } };
   "models.options": { params: { bot: string }; result: ModelOptions };
   "chat.set_model": {
-    params: { bot: string; model?: string; provider?: string; reasoning?: string; session?: string };
-    result: ModelCurrent;
+    params: { bot: string; model?: string; provider?: string; reasoning?: string; confirm?: string; session?: string };
+    result: ModelChangeResult;
   };
   /** Display name only; "" goes back to the profile's own name. The profile id never changes. */
+  "bots.create": {
+    params: { name: string; display_name: string; source: string; description?: string; soul?: string };
+    result: { bot: Bot; warning?: string };
+  };
   "bots.rename": { params: { bot: string; name: string }; result: { display_name: string } };
   "bots.avatar": { params: { bot: string }; result: { rev: number | null; data: string | null } };
   "bots.set_avatar": {
@@ -488,6 +536,7 @@ interface EventBase {
 }
 
 export type BridgeEvent =
+  | (EventBase & { event: "model.changed"; model: string; provider: string; reasoning: string })
   | (EventBase & { event: "turn.start" })
   | (EventBase & { event: "status"; text: string })
   | (EventBase & { event: "thinking" })
