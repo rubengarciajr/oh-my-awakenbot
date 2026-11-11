@@ -25,6 +25,7 @@
   "notes": [
     "One authorized local no-tool diagnostic turn; not a population latency estimate",
     "Durations overlap; do not add provider and bridge elapsed intervals",
-    "Original conversation and draft preserved; no tools or profiles disabled"
+    "Original conversation and draft preserved; no tools or profiles disabled",
+    "first_progress_ms observes Hermes activity, including status updates; it does not prove model output"
   ]
 }

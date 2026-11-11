@@ -55,6 +55,8 @@ test("an away session with a blank label still gets a title", async ({ page }) =
     });
   });
   await open(page);
+  // The chat opens before its background elsewhere metadata arrives.
+  await expect.poll(() => page.getByTestId("away-text").allTextContents()).toContain("Slack session");
   const titles = await page.getByTestId("away-text").allTextContents();
   expect(titles.length).toBeGreaterThan(0);
   for (const t of titles) expect(t.trim()).not.toBe("");

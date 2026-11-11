@@ -75,7 +75,7 @@
 ## Task 5: Integrated delivery
 
 - [x] Review all changes against the spec and resolve findings.
-- [ ] Run appropriate complete desktop checks and backend lifecycle/history/observation checks.
+- [x] Run appropriate complete desktop checks and backend lifecycle/history/observation checks.
 - [ ] Build all three desktop targets, verify updater signatures/checksums and record source revisions.
 - [x] Back up and install the latest Mac build, verify paging/visibility/recovery and preserve the user's draft.
 - [ ] Update draft PR and local evidence; complete the requirement-by-requirement audit before marking the goal complete.
@@ -99,14 +99,14 @@ The user requested a centered 300×300 rotating orb with small Loading text and 
 
 ## Task 8: Desktop installer ZIP (user-added scope)
 
-- [x] After final verification, ZIP the latest Apple Silicon Mac DMG and put the ZIP on the user's Desktop. Preserve any pre-existing file with the chosen name.
-- [x] Verify the ZIP contains the final DMG bytes and provide the absolute file link.
+- [ ] After final verification, ZIP the latest Apple Silicon Mac DMG and put the ZIP on the user's Desktop. Preserve any pre-existing file with the chosen name.
+- [ ] Verify the ZIP contains the final DMG bytes and provide the absolute file link.
 
 ## Observed delivery status
 
-Runtime source: `0acf422379918d5ae22ccd2c9502c22fef0cb783`. Separate operator Hermes source: `1b5c685509c98b407e3364dfa562097ed593daa2`. Both Mac targets were rebuilt, DMGs and updater signatures verified, and the clean Apple Silicon app installed. Strict resource verification passed after launch and native hide/reopen; no Python bundle cache was created. The Desktop ZIP contains the verified Apple Silicon DMG and passed CRC and payload SHA-256 checks.
+Performance-observation source: `0acf422379918d5ae22ccd2c9502c22fef0cb783`. A final copy-only timing-label correction is being packaged; the already-delivered Desktop ZIP remains a verified earlier preview until refreshed. Separate operator Hermes source: `1b5c685509c98b407e3364dfa562097ed593daa2`. Both Mac targets were rebuilt, DMGs and updater signatures verified, and the clean Apple Silicon app installed. Strict resource verification passed after launch and native hide/reopen; no Python bundle cache was created. The Desktop ZIP contains the verified Apple Silicon DMG and passed CRC and payload SHA-256 checks.
 
-Observed checks: UI unit 531 passed; bridge 211 passed/1 skipped; boundary 47 passed; final Rust 165 passed/6 ignored; combined backend 161 passed/1 skipped plus all 15 quality checks. Two complete browser runs each exposed one redundant-scroll detachment during synthetic startup DOM replacement; link tests were corrected without changing assertions and passed all 90 cases across ten repeated runs. The full browser rerun remains in progress. These earlier failures must not be reported as a green full suite.
+Observed checks: UI unit 531 passed; bridge 211 passed/1 skipped; boundary 47 passed; final Rust 165 passed/6 ignored; combined backend 161 passed/1 skipped plus all 15 quality checks. Two complete browser runs each exposed one redundant-scroll detachment during synthetic startup DOM replacement; link tests were corrected without changing assertions and passed all 90 cases across ten repeated runs. The complete rerun passed 366 tests with eight skips. A separately proven metadata-readiness race in resilience.spec.ts was fixed with an awaited condition; its focused case passed 20 repeats and its suite passed three tests. The later eight-string timing-label clarification passed typecheck and both affected browser tests; it changes no timing or runtime logic.
 
 The first personal Linux build (`168091e4`, run `43088688802`) was packaged, smoke-tested, downloaded, checksum-verified and delivered. The refreshed Linux source `da080a30` includes the final runtime, but run `43096663552` failed before producing jobs; the run page reports an unexpected Actions startup error without a specific cause. One rerun has been requested. Refreshed Windows/Mac CI run `43096614608` remains queued. Earlier `e412b354` Windows compilation/installer collection passed; artifact download returned HTTP 502. Final cross-platform artifact verification is still pending; no public release or merge has been performed.
 

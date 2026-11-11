@@ -37,7 +37,6 @@
       "pair": 1,
       "elapsed_seconds": 5.0918091045,
       "cpu_seconds": 0.20000000000000018,
-      "cpu_percent_of_one_core": 3.9278770255398165,
       "rss_mean_kib": 111985.6,
       "rss_peak_kib": 116496,
       "tracked_process_count": 2,
@@ -56,7 +55,6 @@
       "pair": 1,
       "elapsed_seconds": 5.0641978954999995,
       "cpu_seconds": 0.020000000000000462,
-      "cpu_percent_of_one_core": 0.3949292743431745,
       "rss_mean_kib": 114625.6,
       "rss_peak_kib": 122768,
       "tracked_process_count": 2,
@@ -73,7 +71,6 @@
       "pair": 2,
       "elapsed_seconds": 5.087881791,
       "cpu_seconds": 0.16000000000000014,
-      "cpu_percent_of_one_core": 3.1447271491846682,
       "rss_mean_kib": 114595.2,
       "rss_peak_kib": 122576,
       "tracked_process_count": 2,
@@ -92,7 +89,6 @@
       "pair": 2,
       "elapsed_seconds": 5.059994938,
       "cpu_seconds": 0.009999999999999787,
-      "cpu_percent_of_one_core": 0.1976286562047898,
       "rss_mean_kib": 114844.8,
       "rss_peak_kib": 121568,
       "tracked_process_count": 2,
@@ -109,7 +105,6 @@
       "pair": 3,
       "elapsed_seconds": 5.0507903335,
       "cpu_seconds": 0.16000000000000014,
-      "cpu_percent_of_one_core": 3.1678210623549363,
       "rss_mean_kib": 104342.4,
       "rss_peak_kib": 104624,
       "tracked_process_count": 2,
@@ -128,7 +123,6 @@
       "pair": 3,
       "elapsed_seconds": 5.046780833000001,
       "cpu_seconds": 0.03999999999999915,
-      "cpu_percent_of_one_core": 0.7925844478612242,
       "rss_mean_kib": 117544.72727272728,
       "rss_peak_kib": 121776,
       "tracked_process_count": 2,
@@ -151,7 +145,6 @@
       "window_count": 3,
       "elapsed_seconds": 15.230481229,
       "cpu_seconds": 0.5200000000000005,
-      "cpu_percent_of_one_core": 3.4142059740691626,
       "rss_mean_kib": 110307.73333333334,
       "rss_peak_kib": 122576
     },
@@ -159,7 +152,6 @@
       "window_count": 3,
       "elapsed_seconds": 15.1709736665,
       "cpu_seconds": 0.0699999999999994,
-      "cpu_percent_of_one_core": 0.4614074319736701,
       "rss_mean_kib": 115671.70909090909,
       "rss_peak_kib": 122768
     }
@@ -195,7 +187,6 @@
         "window_count": 3,
         "elapsed_seconds": 15.213616771,
         "cpu_seconds": 0.519999999999996,
-        "cpu_percent_of_one_core": 3.417990658153118,
         "rss_mean_kib": 120074.13333333333,
         "rss_peak_kib": 123856
       },
@@ -203,7 +194,6 @@
         "window_count": 3,
         "elapsed_seconds": 15.196803729000003,
         "cpu_seconds": 0.04999999999999005,
-        "cpu_percent_of_one_core": 0.32901655434672256,
         "rss_mean_kib": 123349.33333333333,
         "rss_peak_kib": 123936
       }
@@ -213,7 +203,6 @@
         "window_count": 3,
         "elapsed_seconds": 15.230481229,
         "cpu_seconds": 0.5200000000000005,
-        "cpu_percent_of_one_core": 3.4142059740691626,
         "rss_mean_kib": 110307.73333333334,
         "rss_peak_kib": 122576
       },
@@ -221,12 +210,15 @@
         "window_count": 3,
         "elapsed_seconds": 15.1709736665,
         "cpu_seconds": 0.0699999999999994,
-        "cpu_percent_of_one_core": 0.4614074319736701,
         "rss_mean_kib": 115671.70909090909,
         "rss_peak_kib": 122768
       }
     },
     "native_owner_bridge_cpu_improvement_demonstrated": false,
     "interpretation": "Visible owner+bridge CPU is effectively unchanged; hidden CPU is low in both. The 0.02 CPU-second aggregate difference across 15-second hidden samples is too small to establish an improvement. WebKit renderer CPU is outside this process-tree measurement. RSS is observational across different process lifetimes."
+  },
+  "evidence_export": {
+    "omitted_derived_field": "cpu_percent_of_one_core",
+    "cpu_units": "CPU-seconds and elapsed wall-seconds retained; percentage is not a corpus success rate"
   }
 }

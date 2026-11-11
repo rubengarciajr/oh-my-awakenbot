@@ -37,7 +37,6 @@
       "pair": 1,
       "elapsed_seconds": 5.067824625,
       "cpu_seconds": 0.14999999999999147,
-      "cpu_percent_of_one_core": 2.9598498586559017,
       "rss_mean_kib": 116142.4,
       "rss_peak_kib": 116384,
       "tracked_process_count": 2,
@@ -56,7 +55,6 @@
       "pair": 1,
       "elapsed_seconds": 5.054923604000001,
       "cpu_seconds": 0.020000000000003126,
-      "cpu_percent_of_one_core": 0.3956538528925931,
       "rss_mean_kib": 123507.2,
       "rss_peak_kib": 123872,
       "tracked_process_count": 2,
@@ -73,7 +71,6 @@
       "pair": 2,
       "elapsed_seconds": 5.0641329585,
       "cpu_seconds": 0.18000000000000682,
-      "cpu_percent_of_one_core": 3.554409046426833,
       "rss_mean_kib": 120550.4,
       "rss_peak_kib": 120608,
       "tracked_process_count": 2,
@@ -92,7 +89,6 @@
       "pair": 2,
       "elapsed_seconds": 5.070293,
       "cpu_seconds": 0.01999999999999602,
-      "cpu_percent_of_one_core": 0.3944545216616874,
       "rss_mean_kib": 122841.6,
       "rss_peak_kib": 123776,
       "tracked_process_count": 2,
@@ -109,7 +105,6 @@
       "pair": 3,
       "elapsed_seconds": 5.0816591875,
       "cpu_seconds": 0.18999999999999773,
-      "cpu_percent_of_one_core": 3.7389362999267006,
       "rss_mean_kib": 123529.6,
       "rss_peak_kib": 123856,
       "tracked_process_count": 2,
@@ -128,7 +123,6 @@
       "pair": 3,
       "elapsed_seconds": 5.071587125000001,
       "cpu_seconds": 0.009999999999990905,
-      "cpu_percent_of_one_core": 0.1971769340350414,
       "rss_mean_kib": 123699.2,
       "rss_peak_kib": 123936,
       "tracked_process_count": 2,
@@ -151,7 +145,6 @@
       "window_count": 3,
       "elapsed_seconds": 15.213616771,
       "cpu_seconds": 0.519999999999996,
-      "cpu_percent_of_one_core": 3.417990658153118,
       "rss_mean_kib": 120074.13333333333,
       "rss_peak_kib": 123856
     },
@@ -159,7 +152,6 @@
       "window_count": 3,
       "elapsed_seconds": 15.196803729000003,
       "cpu_seconds": 0.04999999999999005,
-      "cpu_percent_of_one_core": 0.32901655434672256,
       "rss_mean_kib": 123349.33333333333,
       "rss_peak_kib": 123936
     }
@@ -180,5 +172,9 @@
       "active_agents": 0,
       "active_units": 0
     }
+  },
+  "evidence_export": {
+    "omitted_derived_field": "cpu_percent_of_one_core",
+    "cpu_units": "CPU-seconds and elapsed wall-seconds retained; percentage is not a corpus success rate"
   }
 }
