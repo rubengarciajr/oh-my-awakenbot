@@ -49,12 +49,13 @@ pub(crate) fn install_menu<R: tauri::Runtime>(
 
 #[cfg(target_os = "macos")]
 fn restore<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
 
     if let Some(window) = app.get_webview_window("main") {
         app.show()?;
         window.show()?;
         window.unminimize()?;
+        window.emit("awaken-window-visibility", true)?;
         window.set_focus()?;
     }
     Ok(())
@@ -62,7 +63,7 @@ fn restore<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn on_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &tauri::RunEvent) {
-    use tauri::{Manager, RunEvent, WindowEvent};
+    use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
     let intent = match event {
         RunEvent::WindowEvent {
@@ -89,6 +90,8 @@ pub(crate) fn on_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &tau
                 if let Some(window) = app.get_webview_window("main") {
                     if let Err(error) = window.hide() {
                         eprintln!("could not hide Awaken Bot window: {error}");
+                    } else if let Err(error) = window.emit("awaken-window-visibility", false) {
+                        eprintln!("could not announce Awaken Bot window visibility: {error}");
                     }
                 }
             }

@@ -1,12 +1,13 @@
 // The one activity line per turn (design rule 6). Tool/skill calls never get their own timeline rows:
 // while the turn runs, this line's text slides up in place; when it ends it collapses to
 // "Worked for 2m 41s · 6 steps" and a click opens one detail row per step.
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { SlotProps } from "../../features";
 import { activityText, getStore, liveLabel, THINKING, WORKING, type Step, type Turn } from "../../state/store";
 import { ChevronRight, Spinner } from "../../ui";
 import { elapsed } from "../../app/time";
 import { t, t as tr, tx, type Key } from "../../i18n";
+import { useNow } from "../../elsewhere/useNow";
 import "./activity.css";
 
 export const slot = "activity";
@@ -142,14 +143,7 @@ function StepRow({ step, live, now }: { step: Step; live: boolean; now: number }
 export default function Activity({ item, live }: SlotProps["activity"]) {
   const t = item.turn;
   const [open, setOpen] = useState(false);
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!live) return;
-    const h = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(h);
-  }, [live]);
-
-  const now = Date.now();
+  const now = useNow(live, 1000);
   const total = elapsed((t.endedAt ?? now) - t.startedAt);
   const n = t.steps.length;
   const state = live ? "live" : t.outcome === "interrupted" || t.outcome === "ended" || t.outcome === "error" ? t.outcome : "done";

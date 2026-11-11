@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
+import { useVisualActivity } from "../app/visualActivity";
 
-/** Current time in ms; re-renders every `ms` while `on` (for "working · 4m" labels). Read at render time,
- *  so every view of the same session shows the same value. */
+/** Display time only: tick while visible, read fresh immediately on restore. */
 export function useNow(on: boolean, ms = 10_000): number {
+  const active = useVisualActivity();
   const [, tick] = useState(0);
   useEffect(() => {
-    if (!on) return;
+    if (!on || !active) return;
     const h = setInterval(() => tick((n) => n + 1), ms);
     return () => clearInterval(h);
-  }, [on, ms]);
+  }, [on, active, ms]);
   return Date.now();
 }

@@ -20,7 +20,7 @@ export const Bubble = memo(function Bubble({
   faceEl,
   live,
 }: {
-  item: Pick<MessageItem, "kind" | "text" | "error" | "reply" | "files" | "sent">;
+  item: Pick<MessageItem, "kind" | "text" | "error" | "reply" | "files" | "sent" | "truncated">;
   streaming?: boolean;
   /** The bot whose face sits beside its bubble; `face` false keeps the indent without repeating it. */
   bot?: string;
@@ -39,6 +39,7 @@ export const Bubble = memo(function Bubble({
           </div>
         )}
         {item.files?.length ? <SentFiles files={item.files} /> : null}
+        {item.truncated && <div className="msg-reply" role="note">{t("bub.truncated")}</div>}
         {item.reply && (
           <div className="msg-reply" data-testid="bubble-reply">
             {t("bub.replyTarget")} <SourceIcon source={item.reply.source} size={11} /> {item.reply.label}
@@ -73,6 +74,7 @@ export const Bubble = memo(function Bubble({
           </div>
         )}
         {bot && !streaming && paths.length > 0 && <MediaList bot={bot} paths={paths} />}
+        {item.truncated && <div className="msg-reply" role="note">{t("bub.truncated")}</div>}
       </div>
     </div>
   );

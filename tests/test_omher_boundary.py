@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import re
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,7 +157,7 @@ class DocPins(unittest.TestCase):
         for sentence in RULES:
             self.assertIn(_flat(sentence), text)
 
-    def test_boundary_is_between_six_and_twenty_seven_numbered_rules(self) -> None:
+    def test_boundary_is_between_six_and_twenty_eight_numbered_rules(self) -> None:
         # 22: rule 10 (the bridge's read-only git, side panel), rule 11 (SESSIONS' allow-listed agents),
         # rule 12 (the one installer), rule 13 (media.read), rules 14-16 (Plans: dag records, delegation and
         # route reads, CLI agents' session files), rule 17 (CLI usage records), rule 18 (accounts), rule 19
@@ -169,7 +170,8 @@ class DocPins(unittest.TestCase):
         # 27: explicit Create Bot through Hermes' own config-only profile clone.
         # The rules stay numbered 1..n with no gap or repeat.
         rules = re.findall(r"^(\d+)\. ", DOC.read_text(encoding="utf-8"), re.M)
-        self.assertTrue(6 <= len(rules) <= 27, len(rules))
+        # Rule 28 adds bounded, local duration observations and read-only display paging.
+        self.assertTrue(6 <= len(rules) <= 28, len(rules))
         self.assertEqual([int(n) for n in rules], list(range(1, len(rules) + 1)))
 
     def test_glossary_and_docs_index_name_omher(self) -> None:
@@ -524,7 +526,9 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("omher_bridge_boundary", BRIDGE)
         ob = importlib.util.module_from_spec(spec)
         sys.modules["omher_bridge_boundary"] = ob
-        spec.loader.exec_module(ob)
+        # Match a packaged script's import path, including its bundled timing helper.
+        with mock.patch.object(sys, "path", [str(BRIDGE.parent), *sys.path]):
+            spec.loader.exec_module(ob)
         rnd = random.Random(12)
         secret = "sk-SECRET-boundary"
         for round_ in range(25):
@@ -576,7 +580,8 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("omher_bridge_cpa", BRIDGE)
         ob = importlib.util.module_from_spec(spec)
         sys.modules["omher_bridge_cpa"] = ob
-        spec.loader.exec_module(ob)
+        with mock.patch.object(sys, "path", [str(BRIDGE.parent), *sys.path]):
+            spec.loader.exec_module(ob)
         secret = "sk-ant-oat01-BOUNDARY"
         with tempfile.TemporaryDirectory() as d:
             home = Path(d)

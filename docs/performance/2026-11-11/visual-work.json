@@ -1,0 +1,140 @@
+{
+  "measurement": "Chromium renderer TaskDuration; synthetic mock workspace only",
+  "baseline_source": "edc3d33c",
+  "candidate": "visibility-controlled orb assets and display clocks; uncommitted candidate at measurement",
+  "selection": "All three hidden windows and all three visible windows in each six-window alternating run. No sample discarded.",
+  "arms": {
+    "baseline": {
+      "label": "baseline",
+      "fixture": "Chromium headless, full mock workspace, no chat sent; document visibility override models native hidden WebView that keeps rendering; 6 alternating 5-second windows after 0.5-second settles",
+      "result": [
+        {
+          "hidden": false,
+          "wallSeconds": 5.003434999962337,
+          "taskSeconds": 0.4363149999999999,
+          "scriptSeconds": 0.01008400000000001,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.024266,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": true,
+          "wallSeconds": 5.028638000017963,
+          "taskSeconds": 0.44917000000000007,
+          "scriptSeconds": 0.005416999999999977,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.018345,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": false,
+          "wallSeconds": 5.003342999960296,
+          "taskSeconds": 0.484553,
+          "scriptSeconds": 0.003938999999999998,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.019779000000000005,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": true,
+          "wallSeconds": 5.01189099997282,
+          "taskSeconds": 0.39248099999999964,
+          "scriptSeconds": 0.006667000000000006,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.019615000000000007,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": false,
+          "wallSeconds": 5.03484199999366,
+          "taskSeconds": 0.44094900000000026,
+          "scriptSeconds": 0.006222000000000005,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.019539000000000015,
+          "intervalCallbacks": 1,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": true,
+          "wallSeconds": 5.033768999972381,
+          "taskSeconds": 0.3909210000000001,
+          "scriptSeconds": 0.005277000000000004,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.019351000000000007,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow.svg"
+        }
+      ]
+    },
+    "changed": {
+      "label": "changed",
+      "fixture": "Chromium headless, full mock workspace, no chat sent; document visibility override models native hidden WebView that keeps rendering; 6 alternating 5-second windows after 0.5-second settles",
+      "result": [
+        {
+          "hidden": false,
+          "wallSeconds": 5.03561800008174,
+          "taskSeconds": 0.41431399999999996,
+          "scriptSeconds": 0.013270000000000004,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.01852,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": true,
+          "wallSeconds": 5.013496000086889,
+          "taskSeconds": 0.009553999999999951,
+          "scriptSeconds": 0.007216,
+          "layoutSeconds": 0,
+          "styleSeconds": 0,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow-still.svg"
+        },
+        {
+          "hidden": false,
+          "wallSeconds": 5.0153400000417605,
+          "taskSeconds": 0.38670000000000004,
+          "scriptSeconds": 0.009394999999999987,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.016924999999999996,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": true,
+          "wallSeconds": 5.006288999924436,
+          "taskSeconds": 0.007695000000000007,
+          "scriptSeconds": 0.006024000000000002,
+          "layoutSeconds": 0,
+          "styleSeconds": 0,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow-still.svg"
+        },
+        {
+          "hidden": false,
+          "wallSeconds": 5.004023000015877,
+          "taskSeconds": 0.42841799999999997,
+          "scriptSeconds": 0.011713000000000001,
+          "layoutSeconds": 0,
+          "styleSeconds": 0.016800999999999996,
+          "intervalCallbacks": 1,
+          "orb": "/brand/orb-slow.svg"
+        },
+        {
+          "hidden": true,
+          "wallSeconds": 5.004944000043906,
+          "taskSeconds": 0.005279999999999951,
+          "scriptSeconds": 0.004320000000000018,
+          "layoutSeconds": 0,
+          "styleSeconds": 0,
+          "intervalCallbacks": 0,
+          "orb": "/brand/orb-slow-still.svg"
+        }
+      ]
+    }
+  }
+}

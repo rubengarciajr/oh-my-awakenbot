@@ -77,6 +77,38 @@ class GatewayStartup(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(os.environ.get('HERMES_HOME'), before)
         self.assertEqual(self.scope.get(), 'previous')
 
+    async def test_session_readiness_is_explicit_when_the_official_runtime_supports_it(self):
+        calls = []
+        def discover(home, *, timeout, readiness='gateway'):
+            calls.append(('discover', home, timeout, readiness))
+            return types.SimpleNamespace(state='absent', endpoint=None)
+        def ensure(home, *, timeout, idle_exit, readiness='gateway'):
+            calls.append(('ensure', home, timeout, idle_exit, readiness))
+            return types.SimpleNamespace(state='ready', endpoint=object())
+        runtime = sys.modules['hermes_cli.gateway_runtime']
+        runtime.discover_gateway_endpoint = discover
+        runtime.ensure_gateway_runtime = ensure
+        async with AsyncExitStack() as stack:
+            await self.bridge._default_connect(stack, Path('/bots/one'))
+        self.assertEqual(calls, [('discover', Path('/bots/one'), 2.0, 'session'),
+                                 ('ensure', Path('/bots/one'), 5.0, True, 'session')])
+        self.assertEqual(len(self.dials), 1)
+
+    async def test_older_runtime_keeps_its_existing_readiness_without_retrying_type_errors(self):
+        calls = []
+        def discover(home, *, timeout):
+            calls.append((home, timeout))
+            raise TypeError('runtime failure, not an unsupported argument')
+        def ensure(home, *, timeout, idle_exit):
+            self.fail('discovery failure cannot start an owner')
+        runtime = sys.modules['hermes_cli.gateway_runtime']
+        runtime.discover_gateway_endpoint = discover
+        runtime.ensure_gateway_runtime = ensure
+        async with AsyncExitStack() as stack:
+            with self.assertRaisesRegex(TypeError, 'runtime failure'):
+                await self.bridge._default_connect(stack, Path('/bots/one'))
+        self.assertEqual(calls, [(Path('/bots/one'), 2.0)])
+
     async def test_one_waiting_dial_does_not_serialize_another_profile(self):
         self.gate = asyncio.Event()
         async with AsyncExitStack() as one, AsyncExitStack() as two:

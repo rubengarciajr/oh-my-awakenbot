@@ -1001,3 +1001,10 @@
   white-space: nowrap;
   padding: 0 10px;
 }
+/* Local, content-free response measurements in Settings > Computer. */
+.reply-performance .st-note { color: var(--muted); }
+.reply-performance-sample { margin-top: 12px; padding: 12px; }
+.reply-performance-sample summary { cursor: pointer; }
+.reply-performance-sample dl { margin: 12px 0 0; }
+.reply-performance-value { display: flex; justify-content: space-between; gap: 20px; padding: 4px 0; }
+.reply-performance-value dd { margin: 0; font-variant-numeric: tabular-nums; }
