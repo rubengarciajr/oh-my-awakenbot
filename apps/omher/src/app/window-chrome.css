@@ -1,0 +1,93 @@
+.desktop-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #111214);
+}
+.window-chrome {
+  position: relative;
+  flex: none;
+  height: 36px;
+  display: flex;
+  align-items: stretch;
+  background: var(--bg, #111214);
+  border-bottom: 1px solid var(--line-soft, #25262a);
+  color: var(--muted, #a7a8af);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.window-drag-region {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+.window-chrome-name {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  padding-left: 138px; /* balance the Windows controls so the name stays centered */
+  pointer-events: none;
+}
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+}
+.window-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+}
+.window-control svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  pointer-events: none;
+}
+.window-control:hover { background: var(--raise2, #2a2b30); color: var(--ink, #f3f1ec); }
+.window-control--close:hover { background: #b52c35; color: #fff; }
+.window-control:focus-visible {
+  outline: 1px solid var(--ink, #f3f1ec);
+  outline-offset: -4px;
+}
+[data-platform="mac"] .window-controls { order: -1; padding-left: 8px; }
+[data-platform="mac"] .window-control { width: 28px; position: relative; }
+[data-platform="mac"] .window-control::before {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--quiet, #909198);
+}
+[data-platform="mac"] .window-control--close::before { background: #ff5f57; }
+[data-platform="mac"] .window-control--minimize::before { background: #febc2e; }
+[data-platform="mac"] .window-control--maximize::before { background: #28c840; }
+[data-platform="mac"] .window-control:hover { background: transparent; }
+[data-platform="mac"] .window-control svg {
+  z-index: 1;
+  width: 8px;
+  height: 8px;
+  color: #111214;
+  opacity: 0;
+}
+[data-platform="mac"] .window-controls:hover svg,
+[data-platform="mac"] .window-control:focus-visible svg { opacity: 1; }
+[data-platform="mac"] .window-chrome-name { padding-left: 0; padding-right: 92px; }
+.desktop-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.desktop-shell[data-native] > .desktop-content {
+  /* Fixed launch/setup/dialog surfaces belong to the content, below the usable window controls. */
+  contain: layout;
+}

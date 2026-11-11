@@ -32,7 +32,7 @@ export function Header({ bot, chat }: { bot: Bot; chat: Chat | undefined }) {
       {Places && <Places bot={bot} />}
       <div className="head-right" data-testid="head-right">
         {Picker ? (
-          <Picker bot={bot} chat={chat} />
+          <Picker key={bot.name} bot={bot} chat={chat} />
         ) : (
           <Pill as="span" className="model-pill">
             <span data-testid="model-label" title={model}>

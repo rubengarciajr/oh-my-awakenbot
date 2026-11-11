@@ -38,7 +38,7 @@ export function Sidebar() {
       <div className="side-top">
         <div className="brand">
           <OrbMark />
-          <img className="church-wordmark" src={churchLogo} alt="Awaken Church" width={124} height={13} />
+          <img className="church-wordmark" src={churchLogo} alt="Awaken Church" width={1039} height={119} />
         </div>
         <div className="side-add">
           <IconButton label={t("nav.addBot")} onClick={() => AddBot && setAdding((v) => !v)} aria-expanded={adding} disabled={!AddBot}>

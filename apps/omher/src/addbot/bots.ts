@@ -1,7 +1,7 @@
 // The store has no "re-read bots" action, so the add-bot popover asks the bridge itself over a short-lived
 // second connection (same URL resolution as the app's client) and hands the result to the store.
 import { BridgeClient } from "../lib/bridge";
-import type { Bot } from "../lib/protocol";
+import type { Bot, OpParams, OpResult } from "../lib/protocol";
 import type { Store } from "../state/store";
 
 async function withBridge<T>(fn: (b: BridgeClient) => Promise<T>): Promise<T> {
@@ -12,6 +12,18 @@ async function withBridge<T>(fn: (b: BridgeClient) => Promise<T>): Promise<T> {
   } finally {
     b.close();
   }
+}
+
+/** Explicit creation only. Refresh the sidebar before opening the new bot's independent main chat. */
+export async function createBot(store: Store, params: OpParams<"bots.create">): Promise<OpResult<"bots.create">> {
+  return withBridge(async (b) => {
+    const result = await b.request("bots.create", params);
+    const { bots } = await b.request("bots.list", {});
+    store.dispatch({ type: "bots", bots });
+    // Creation is complete; the new gateway can finish starting in the chat view.
+    void store.actions.selectBot(result.bot.name);
+    return result;
+  });
 }
 
 /** bots.list -> store. Returns the fresh list. */

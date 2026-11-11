@@ -23,6 +23,21 @@ If Hermes is missing, first launch offers **Install**. It installs Hermes Agent 
 the upstream installer, then connects to your local bots. Model providers and coding tools still use your
 own accounts. The app never takes over or patches Hermes.
 
+## Bots, models and desktop window
+
+The sidebar **+ → Create a bot** creates a separate Hermes profile inside the app. Choose a name,
+ID and settings source, with an optional description and personality. Hermes inherits the source’s
+saved model/provider, skills and curated context through its own clone. Conversations, automations
+and channel connections stay separate. A newly created bot may need a moment to start.
+
+The header’s model picker changes the current bot chat’s model/provider and reasoning. Hermes’
+confirmation, cost and context warnings appear inside the picker. A choice made while a turn runs
+is applied after that turn; the picker follows Hermes’ model events. Failed requests keep the old
+selection and show the actual error. Model changes do not send a chat message.
+
+Native windows use a borderless off-black titlebar with drag support and close/minimize/maximize
+controls for Mac and Windows, available during launch and setup too.
+
 ## Branding and launch
 
 The launch screen lasts five seconds while the bridge starts in the background. Each launch independently

@@ -61,6 +61,8 @@ class FakeClient:
             return {"sessions": rows, "scope": params.get("scope", "live")}
         if method == "session.active_list":
             return {"sessions": self.active}
+        if method == "session.info":
+            return dict(self.model_info)
         if method == "session.resume":
             return {"session_id": MAIN_RUNTIME, "stored_session_id": params["session_id"], "running": False,
                     "messages": [

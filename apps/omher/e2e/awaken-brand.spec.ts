@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.removeItem("omher.theme"));
+});
+
 test("native icon export keeps the bright ice orb instead of flattening it to black", async ({ page }) => {
   await page.goto("/");
   const pixel = await page.evaluate(async () => {
@@ -87,4 +91,17 @@ test("corner uses the church wordmark and a slower morphing orb", async ({ page,
   expect(svg).not.toContain('dur="5s"');
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect.poll(() => page.locator(".brand .orb-mark img").evaluate((img) => (img as HTMLImageElement).currentSrc)).toContain("orb-slow-still.svg");
+});
+
+test("church wordmark retains the original artwork ratio at readable size", async ({ page }) => {
+  await page.goto("/");
+  const logo = page.getByTestId("sidebar").getByRole("img", { name: "Awaken Church" });
+  const size = await logo.evaluate((el) => {
+    const img = el as HTMLImageElement;
+    const box = img.getBoundingClientRect();
+    return { natural: img.naturalWidth / img.naturalHeight, ratio: box.width / box.height, height: box.height };
+  });
+  expect(size.natural).toBeCloseTo(1039 / 119, 4);
+  expect(size.ratio).toBeCloseTo(size.natural, 2);
+  expect(size.height).toBeGreaterThanOrEqual(15);
 });

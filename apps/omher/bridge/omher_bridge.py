@@ -3329,6 +3329,7 @@ class Bridge:
         self.server = None
         self.port = 0
         self._env_lock = asyncio.Lock()
+        self._create_lock = asyncio.Lock()  # serialize profile-name reservation across app connections
         self._tasks: set[asyncio.Task] = set()
         self._routine_state: dict[str, dict] = {}
         self._routine_changes: list[tuple[str, str, dict]] = []  # routines.update / routine.added, queued by a poll
@@ -3343,6 +3344,7 @@ class Bridge:
             "elsewhere.list": self.op_elsewhere_list, "elsewhere.peek": self.op_elsewhere_peek,
             "routines.list": self.op_routines_list, "models.options": self.op_models_options,
             "chat.set_model": self.op_set_model,
+            "bots.create": self.op_bots_create,
             "bots.rename": self.op_bots_rename, "bots.avatar": self.op_bots_avatar,
             "bots.set_avatar": self.op_bots_set_avatar, "bots.info": self.op_bots_info,
             "skills.list": self.op_skills_list, "links.places": self.op_links_places,
@@ -3647,7 +3649,19 @@ class Bridge:
             await self._chat_emit(conn, chat, event, **fields)
         if params.get("execution_generation") is not None:
             t.generation = params["execution_generation"]
-        if typ == "message.start":
+        if typ == "session.info":
+            info = p.get("info") if isinstance(p.get("info"), dict) else p
+            if isinstance(info.get("model"), str) and info["model"]:
+                # Policy events omit provider; the saved profile can differ from this chat's pick.
+                # Resume metadata only, never a transcript, for the canonical resolved route.
+                if not isinstance(info.get("provider"), str) or not info["provider"]:
+                    sid = chat.runtime_id if chat is not None else conn.main_id
+                    current = await self._call(conn, "session.info", session_id=sid)
+                    info = current or info
+                if info.get("provider"):
+                    await out("model.changed", model=str(info.get("model") or p.get("model") or ""),
+                              provider=str(info["provider"]), reasoning=str(info.get("reasoning_effort") or ""))
+        elif typ == "message.start":
             await self._begin_turn(conn, chat)
         elif typ == "status.update":
             text = p.get("text")
@@ -3927,7 +3941,7 @@ class Bridge:
     async def _generation(self, conn: Conn, main: str, chat: FolderChat | None = None):
         t = chat or conn
         if t.generation is None:
-            snap = await self._call(conn, "session.resume", session_id=main)
+            snap = await self._call(conn, "session.resume", session_id=main, omit_messages=True)
             t.generation = snap.get("execution_generation")
         return t.generation if t.generation is not None else 0
 
@@ -4025,7 +4039,7 @@ class Bridge:
         reasoning = conn.bot["reasoning"]
         if conn.main_id:
             with contextlib.suppress(Exception):
-                snap = await self._call(conn, "session.resume", session_id=conn.main_id)
+                snap = await self._call(conn, "session.resume", session_id=conn.main_id, omit_messages=True)
                 reasoning = str((snap.get("info") or {}).get("reasoning_effort") or reasoning)
         return {"providers": providers,
                 "current": {"model": str(res.get("model") or conn.bot["model"]),
@@ -4033,35 +4047,53 @@ class Bridge:
                 "reasoning_levels": list(REASONING_LEVELS)}
 
     async def op_set_model(self, p) -> dict:
-        model, provider, reasoning = p.get("model"), p.get("provider"), p.get("reasoning")
-        for k, v in (("model", model), ("provider", provider), ("reasoning", reasoning)):
-            if v is not None and (not isinstance(v, str) or not v.strip()):
+        model, provider, reasoning, confirm = (p.get(k) for k in ("model", "provider", "reasoning", "confirm"))
+        for k, v in (("model", model), ("provider", provider), ("reasoning", reasoning), ("confirm", confirm)):
+            if v is not None and (not isinstance(v, str) or not v.strip() or len(v) > 2048):
                 raise BridgeError("bad_request", f"{k} must be a non-empty string")
         if model is None and reasoning is None:
             raise BridgeError("bad_request", "need model or reasoning")
-        if provider is not None and model is None:
-            raise BridgeError("bad_request", "provider needs a model")
+        if (provider is not None or confirm is not None) and model is None:
+            raise BridgeError("bad_request", "provider and confirmation need a model")
         if reasoning is not None and reasoning not in REASONING_LEVELS:
             raise BridgeError("bad_request", f"unknown reasoning level {reasoning}")
         conn = await self._conn(p.get("bot"))
         main, _chat = await self._target(conn, p)
 
+        async def snapshot():
+            snap = await self._call(conn, "session.resume", session_id=main, omit_messages=True)
+            info = snap.get("info") or {}
+            return snap, {"model": str(info.get("model") or ""), "provider": str(info.get("provider") or conn.bot["provider"]),
+                          "reasoning": str(info.get("reasoning_effort") or "")}
+
         async def mutate(operation: str, payload: dict):
-            snap = await self._call(conn, "session.resume", session_id=main)  # fresh revision + generation
-            return await self._call(conn, "session.mutate", session_id=main, request_id=uuid.uuid4().hex,
-                                    expected_revision=snap.get("revision", 0),
-                                    expected_generation=snap.get("execution_generation", 0),
-                                    operation=operation, payload=payload) or {}
+            for attempt in range(2):
+                snap, current = await snapshot()
+                try:
+                    result = await self._call(conn, "session.mutate", session_id=main, request_id=uuid.uuid4().hex,
+                                              expected_revision=snap.get("revision", 0),
+                                              expected_generation=snap.get("execution_generation", 0),
+                                              operation=operation, payload=payload) or {}
+                    return result, current
+                except Exception as e:
+                    # Retry only an explicit stale-fence refusal, never an ambiguous lost reply.
+                    if attempt or not _named(e, "GatewayRPCError") or str(e) not in {"revision_conflict", "stale_generation"}:
+                        raise
+        deferred = False
         if model is not None:
-            res = await mutate("model", {"model": model, **({"provider": provider} if provider else {})})
+            payload = {"model": model, **({"provider": provider} if provider else {}), **({"confirm": confirm} if confirm else {})}
+            res, current = await mutate("model", payload)
             if res.get("status") == "confirmation_required":
-                raise BridgeError("confirmation_required", str(res.get("confirm_message") or "this model needs a confirmation"))
+                token = res.get("confirm")
+                if not isinstance(token, str) or not token:
+                    raise BridgeError("confirmation_required", str(res.get("confirm_message") or "model confirmation unavailable"))
+                return {**current, "confirmation": {"token": token, "message": str(res.get("confirm_message") or "")}}
+            deferred = res.get("status") == "deferred"
         if reasoning is not None:
-            await mutate("reasoning", {"effort": reasoning})
-        snap = await self._call(conn, "session.resume", session_id=main)
-        info = snap.get("info") or {}
-        return {"model": str(info.get("model") or ""), "provider": str(info.get("provider") or conn.bot["provider"]),
-                "reasoning": str(info.get("reasoning_effort") or "")}
+            res, _ = await mutate("reasoning", {"effort": reasoning})
+            deferred = deferred or res.get("status") == "deferred"
+        _, current = await snapshot()
+        return {**current, **({"status": "deferred"} if deferred else {})}
 
     # ------------------------------------------------------------ bots / hello / routines
 
@@ -4093,9 +4125,59 @@ class Bridge:
                          "avatar_rev": avatar_rev(b["path"])})
         return {"bots": bots}
 
-    # ------------------------------------------------------------ bot profile: name, picture, facts
-    # The only writes omher makes to a profile. Both are presentation-only in Hermes: the profile id,
-    # its folder, config and sessions never change.
+    # ------------------------------------------------------------ bot profile: creation, name, picture, facts
+
+    async def op_bots_create(self, p) -> dict:
+        """Explicit Create Bot: Hermes owns the config-only clone and channel stripping.
+        No clone-all, wrapper alias, launch credential mirroring, or caller-selected clone flags."""
+        name = p.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
+            raise BridgeError("invalid_name", "Use 1–64 lowercase letters, numbers, hyphens or underscores, starting with a letter.")
+        if name in {"default", "hermes", "root", "sudo", "test", "tmp"}:
+            raise BridgeError("invalid_name", "That bot ID is reserved. Choose a different ID.")
+        display = clean_display_name(p.get("display_name"))
+        if not display:
+            raise BridgeError("bad_request", "Give the bot a name.")
+        source = self._bot(p.get("source"))
+        fields = {}
+        for key, limit in (("description", 500), ("soul", 16000)):
+            value = p.get(key, "")
+            if not isinstance(value, str) or len(value) > limit:
+                raise BridgeError("bad_request", f"{key} must be text of at most {limit} characters")
+            if value.strip():
+                fields[key] = value.strip()
+        async with self._create_lock:
+            target = self.home / "profiles" / name
+            # Includes hidden/marker-less directories and dangling links: never overwrite any of them.
+            if os.path.lexists(target):
+                raise BridgeError("already_exists", "That bot ID already exists.")
+            conn = await self._conn(source["name"])
+            try:
+                result = await self._call(conn, "profiles.create", name=name, clone_from=source["name"],
+                                          clone_all=False, clone_channels=False, mirror_credentials=False,
+                                          no_alias=True, **fields)
+            except Exception as exc:
+                if _named(exc, "GatewayRPCError") and getattr(exc, "code", None) == 4062:
+                    if os.path.lexists(target):
+                        raise BridgeError("already_exists", "That bot ID already exists.") from exc
+                    raise BridgeError("bad_request", "Hermes refused this bot ID or source profile. Choose another ID and try again.") from exc
+                raise
+            # The source gateway may belong to a remote/routed owner. Never report a bot that did not
+            # appear in this bridge's own home, and never use a server-returned path as write authority.
+            created = next((b for b in discover_bots(self.home) if b["name"] == name), None)
+            if not result.get("ok") or created is None or target.is_symlink():
+                raise BridgeError("create_unconfirmed", "Hermes did not confirm the new bot in this installation. Refresh the bot list before trying again.")
+            warning = ""
+            try:
+                await asyncio.to_thread(write_display_name, target, display)
+            except Exception:
+                warning = "The bot was created, but its display name could not be saved. Rename it in bot settings."
+            if fields.get("soul") and not result.get("soul_written"):
+                warning = "The bot was created, but Hermes did not save its custom personality. It keeps the source bot's personality."
+            await self.emit("bots.update", name)
+            listed = await self.op_bots_list({})
+            bot = next(b for b in listed["bots"] if b["name"] == name)
+            return {"bot": bot, **({"warning": warning} if warning else {})}
 
     async def op_bots_rename(self, p) -> dict:
         bot = self._bot(p.get("bot"))

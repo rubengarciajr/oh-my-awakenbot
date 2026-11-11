@@ -817,6 +817,17 @@ const awayFor = (bot) =>
 const OPS = {
   hello: () => ({ bridge: "mock", version: "0.1.0", hermes: { home: "/mock/.hermes", version: "mock" } }),
   "bots.list": () => ({ bots: Object.values(bots).map(publicBot) }),
+  "bots.create": (p) => {
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(p.name || "")) throw new OpError("invalid_name", "Invalid bot ID");
+    if (bots[p.name]) throw new OpError("already_exists", "That bot ID already exists.");
+    const source = needBot({ bot: p.source });
+    bots[p.name] = { ...source, name: p.name, display_name: p.display_name, is_default: false,
+      description: p.description || "", running: false, status: "online" };
+    models[p.name] = { ...models[source.name] };
+    history[p.name] = [];
+    broadcast({ event: "bots.update", bot: p.name });
+    return { bot: publicBot(bots[p.name]) };
+  },
   "chat.open": (p) => {
     const b = needBot(p);
     const m = models[b.name];

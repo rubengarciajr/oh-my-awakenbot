@@ -108,7 +108,7 @@ test("unsupported: one gray note, the old value stays", async ({ page }) => {
   const pop = page.getByTestId("model-pop");
   await pop.getByRole("radio", { name: "Low" }).click();
   const note = page.getByTestId("model-note");
-  await expect(note).toHaveText("Change it in Hermes for now");
+  await expect(note).toHaveText("Could not change the model: Hermes cannot change this yet");
   await expect(page.getByTestId("reasoning-label")).toHaveText("High");
   await expect(pop.getByRole("radio", { name: "High" })).toHaveAttribute("aria-checked", "true");
   const color = await note.evaluate((el) => getComputedStyle(el).color);
@@ -130,7 +130,7 @@ test("settings opens and closes; theme Light sets data-theme; bot and provider p
   // General: theme
   await expect(page.getByTestId("settings-nav-general")).toHaveAttribute("aria-current", "page");
   const theme = page.getByTestId("theme-seg");
-  await expect(theme.getByRole("radio", { name: "System" })).toHaveAttribute("aria-checked", "true");
+  await expect(theme.getByRole("radio", { name: "Dark" })).toHaveAttribute("aria-checked", "true");
   await theme.getByRole("radio", { name: "Light" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   expect(await page.evaluate(() => localStorage.getItem("omher.theme"))).toBe("light");
@@ -168,7 +168,7 @@ test("settings opens and closes; theme Light sets data-theme; bot and provider p
   await expect(page.getByTestId("settings-view")).toHaveCount(0);
 });
 
-test("add bot: lists profiles with status; Connect re-reads bots.list; create is disabled", async ({ page }) => {
+test("add bot: lists profiles with status; Connect re-reads bots.list; creation is available", async ({ page }) => {
   // Show the default profile as not connected until something attaches it (a models.options read).
   let attached = false;
   await page.routeWebSocket(/127\.0\.0\.1/, (ws) => {
@@ -202,8 +202,7 @@ test("add bot: lists profiles with status; Connect re-reads bots.list; create is
   await expect(hermes).toContainText("Not connected");
   await expect(page.getByTestId("addbot-kami").getByRole("button", { name: "Connect" })).toHaveCount(0);
   const create = page.getByTestId("addbot-create");
-  await expect(create).toBeDisabled();
-  await expect(create).toContainText("Soon");
+  await expect(create).toBeEnabled();
 
   await hermes.getByRole("button", { name: "Connect" }).click();
   await expect(hermes).toContainText("Connected");

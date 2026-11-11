@@ -60,6 +60,15 @@ const away = (id: string, last_active: number, over: Partial<Away> = {}): Away =
   ...over,
 });
 
+it("model events repaint the owned chat and its picker without starting a turn", () => {
+  let state = reduce(initialState(), { type: "chat.opened", bot: "kami", res: opened(), now: T0 });
+  state = reduce(state, { type: "event", ev: { event: "model.changed", bot: "kami", model: "next-model", provider: "next-provider", reasoning: "low" }, now: T0 });
+  expect(state.chats.kami).toMatchObject({ model: "next-model", provider: "next-provider", reasoning: "low", turn: null });
+  state = reduce(state, { type: "event", ev: { event: "model.changed", bot: "kami", session: "folder", model: "folder-model", provider: "next-provider", reasoning: "high" }, now: T0 });
+  expect(state.chats.kami.model).toBe("next-model");
+  expect(state.chats[folderKey("kami", "folder")].model).toBe("folder-model");
+});
+
 describe("activityText", () => {
   it("maps tool names to verbs", () => {
     expect(activityText("terminal", "ls")).toBe("Running ls");

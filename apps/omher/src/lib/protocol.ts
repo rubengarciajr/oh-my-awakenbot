@@ -190,6 +190,11 @@ export interface ModelCurrent {
   reasoning: string;
 }
 
+export interface ModelChangeResult extends ModelCurrent {
+  status?: "deferred";
+  confirmation?: { token: string; message: string };
+}
+
 export interface ModelOptions {
   providers: ModelProvider[];
   current: ModelCurrent;
@@ -280,10 +285,14 @@ export interface OpMap {
   "plugins.remove": { params: { bot: string; name: string }; result: { name: string } };
   "models.options": { params: { bot: string }; result: ModelOptions };
   "chat.set_model": {
-    params: { bot: string; model?: string; provider?: string; reasoning?: string; session?: string };
-    result: ModelCurrent;
+    params: { bot: string; model?: string; provider?: string; reasoning?: string; confirm?: string; session?: string };
+    result: ModelChangeResult;
   };
   /** Display name only; "" goes back to the profile's own name. The profile id never changes. */
+  "bots.create": {
+    params: { name: string; display_name: string; source: string; description?: string; soul?: string };
+    result: { bot: Bot; warning?: string };
+  };
   "bots.rename": { params: { bot: string; name: string }; result: { display_name: string } };
   "bots.avatar": { params: { bot: string }; result: { rev: number | null; data: string | null } };
   "bots.set_avatar": {
@@ -488,6 +497,7 @@ interface EventBase {
 }
 
 export type BridgeEvent =
+  | (EventBase & { event: "model.changed"; model: string; provider: string; reasoning: string })
   | (EventBase & { event: "turn.start" })
   | (EventBase & { event: "status"; text: string })
   | (EventBase & { event: "thinking" })

@@ -6,6 +6,11 @@ AWAKEN BOT 0.1.0 — desktop preview
 - Full-window launch backgrounds with a circular orb at every window shape.
 - Readable accent chips and buttons; dark mode defaults on new installations.
 - Off-black and off-white dark mode, with warm off-white accents.
+- Create independent bots directly in the app; choose a settings source and optional personality.
+- Switch the chat model/provider and reasoning in the app, including Hermes confirmations.
+- Borderless native windows with integrated Mac/Windows window controls.
+- Church wordmark uses the original 1039:119 proportions.
+- Retry a bot after Hermes finishes starting, without restarting the app.
 - Installers for Apple Silicon Mac, Intel Mac, and Windows x64.
 - Signed app updates delivered from the AWAKEN BOT repository, after an explicit release promotion.
 

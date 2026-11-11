@@ -219,7 +219,7 @@ test("the mirror lays out the textarea's own text: same lines, same places, at e
 test("screenshots: the picker mid-message and a sent bubble, dark and light", async ({ page }) => {
   mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.addInitScript(() => localStorage.removeItem("omher.theme"));
+  await page.addInitScript(() => localStorage.setItem("omher.theme", "system"));
   for (const theme of ["dark", "light"] as const) {
     await mock("mock.reset");
     await page.emulateMedia({ colorScheme: theme });

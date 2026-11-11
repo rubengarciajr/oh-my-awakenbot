@@ -20,6 +20,7 @@ import type {
   HelloResult,
   FolderOpenResult,
   ModelCurrent,
+  ModelChangeResult,
   ModelOptions,
   PeekMsg,
   ReplyRef,
@@ -625,6 +626,8 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
   }
   const bot = ev.bot;
   switch (ev.event) {
+    case "model.changed":
+      return reduce(state, { type: "model.set", bot, current: { model: ev.model, provider: ev.provider, reasoning: ev.reasoning } });
     // A turn starts only on turn.start (or a chat found running on open). Every other live event belongs to the
     // running turn and is dropped without one: an agent's own status after its turn ended (OmO's setStatus after
     // agent_end) must not start a turn that nothing ends.
@@ -1099,7 +1102,7 @@ export interface Actions {
   setLanguage(lang: Lang): void;
   loadModels(bot?: string): Promise<void>;
   peek(sessionId: string, limit?: number, bot?: string): Promise<void>;
-  setModel(change: { model?: string; provider?: string; reasoning?: string }): Promise<void>;
+  setModel(change: { model?: string; provider?: string; reasoning?: string; confirm?: string }): Promise<ModelChangeResult | undefined>;
   togglePanel(open?: boolean): void;
   /** Open the side panel on one tab (Details, Terminal, Schedule, Worktrees, Diff). */
   setPanelTab(tab: PanelTabId): void;
@@ -1516,7 +1519,8 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       if (!bot) return;
       try {
         const current = await bridge.request("chat.set_model", { bot, ...change });
-        dispatch({ type: "model.set", bot, current });
+        if (!current.confirmation && current.status !== "deferred") dispatch({ type: "model.set", bot, current });
+        return current;
       } catch (e) {
         fail(e);
       }
