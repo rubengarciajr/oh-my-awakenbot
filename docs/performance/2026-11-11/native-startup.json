@@ -12,5 +12,6 @@
   "all_sessions_ready_seconds": 43.557,
   "global_gateway_ready_seconds": 78.806,
   "profiles_pending_count": 0,
-  "global_ready": true
+  "global_ready": true,
+  "measurement_scope": "One existing 22-profile fleet. The two-sessions observation counts the first two detected ready profiles within that fleet; it is not an isolated two-profile installation benchmark."
 }

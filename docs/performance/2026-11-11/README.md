@@ -35,3 +35,12 @@ A follow-up identified the app's GPU, Networking and WebContent helpers through 
 Across three accepted hidden windows per arm, baseline CPU was 0.08 CPU-seconds / 15.270 elapsed seconds and candidate CPU was 0.09 / 15.240 (about 0.52% and 0.59% of one core). Both were already low; these samples establish **no native hidden-CPU improvement**. Visible observations were 13.25 / 15.449 CPU/wall seconds before and 11.41 / 15.315 after, but build order was post-then-baseline, process warmth and rendered history differed, and these are observational samples rather than a causal benchmark.
 
 All accepted windows, rejected intervals and excluded pilots are retained. Baseline raw snapshots are indexed in `native-cpu-full-before.samples.jsonl`; the earlier candidate capture did not persist raw timestamps, which is recorded explicitly. Transient helper churn caused one refusal per arm; a refused interval is excluded from stable-cohort totals and must not be treated as measured zero. The evidence retains physical CPU/wall seconds rather than treating utilization as a corpus success rate. No broader battery-life or all-time CPU claim follows from these windows.
+
+
+## Final package verification
+
+Final runtime source `564df1e237eaac474fa175486f1d9124c56d7d17` includes the localized Hermes-activity clarification. Desktop CI run `43099898402` succeeded for both Mac architectures and Windows. Both local Mac DMGs, all three updater signatures, the installed Apple Silicon bundle and its Desktop ZIP were verified. Windows archive digest/CRC passed, and the checked-out merge tree exactly matched this runtime source tree. Personal Linux run `43099929486` at `c5068a45` succeeded through packaged startup smoke; its runtime paths match the desktop source, and downloaded archive/source/package checksums passed. No release or updater promotion was performed.
+
+The complete browser suite passed 366 tests with eight skips before the final copy-only labels. Typecheck and the two affected browser tests passed after those eight string changes; no timing/runtime logic changed. The separately versioned engine passed 161 integrated tests, one skip and all 15 quality checks. Existing chat/model/provider/reasoning metadata was unchanged after final installation.
+
+Full repository CI run `43099899257` also passed on runtime source `564df1e2`: both distribution jobs, both Linux test shards, all four Windows test shards and their exact-coverage aggregate succeeded. Final documentation edits change no runtime or test code.

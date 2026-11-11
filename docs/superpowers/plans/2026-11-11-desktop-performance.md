@@ -76,9 +76,9 @@
 
 - [x] Review all changes against the spec and resolve findings.
 - [x] Run appropriate complete desktop checks and backend lifecycle/history/observation checks.
-- [ ] Build all three desktop targets, verify updater signatures/checksums and record source revisions.
+- [x] Build all three desktop targets, verify updater signatures/checksums and record source revisions.
 - [x] Back up and install the latest Mac build, verify paging/visibility/recovery and preserve the user's draft.
-- [ ] Update draft PR and local evidence; complete the requirement-by-requirement audit before marking the goal complete.
+- [x] Update draft PR and local evidence; complete the requirement-by-requirement audit before marking the goal complete.
 
 ## Task 6: Personal Linux build (user-added scope)
 
@@ -95,19 +95,21 @@ The user requested a centered 300×300 rotating orb with small Loading text and 
 
 - [x] Implement the loading state predicate and foreground overlay using the existing brand orb.
 - [x] Verify centering, dimensions, full-window blur, animated dots/orb, loaded/error transitions, reduced motion and navigation.
-- [ ] Include it in the reviewed, rebuilt Mac and Windows delivery.
+- [x] Include it in the reviewed, rebuilt Mac and Windows delivery.
 
 ## Task 8: Desktop installer ZIP (user-added scope)
 
-- [ ] After final verification, ZIP the latest Apple Silicon Mac DMG and put the ZIP on the user's Desktop. Preserve any pre-existing file with the chosen name.
-- [ ] Verify the ZIP contains the final DMG bytes and provide the absolute file link.
+- [x] After final verification, ZIP the latest Apple Silicon Mac DMG and put the ZIP on the user's Desktop. Preserve any pre-existing file with the chosen name.
+- [x] Verify the ZIP contains the final DMG bytes and provide the absolute file link.
 
 ## Observed delivery status
 
-Performance-observation source: `0acf422379918d5ae22ccd2c9502c22fef0cb783`. A final copy-only timing-label correction is being packaged; the already-delivered Desktop ZIP remains a verified earlier preview until refreshed. Separate operator Hermes source: `1b5c685509c98b407e3364dfa562097ed593daa2`. Both Mac targets were rebuilt, DMGs and updater signatures verified, and the clean Apple Silicon app installed. Strict resource verification passed after launch and native hide/reopen; no Python bundle cache was created. The Desktop ZIP contains the verified Apple Silicon DMG and passed CRC and payload SHA-256 checks.
+Final app runtime source: `564df1e237eaac474fa175486f1d9124c56d7d17`. Separate installed operator Hermes source: `1b5c685509c98b407e3364dfa562097ed593daa2`. Both Mac targets were rebuilt locally, and the complete desktop CI matrix (`43099898402`) passed for Apple Silicon, Intel and Windows. Windows artifact digest/CRC and updater signature passed; its checked-out merge tree exactly matches the app runtime source tree. All three updater signatures and the local release manifest were verified. No public release, updater promotion or merge was performed.
 
-Observed checks: UI unit 531 passed; bridge 211 passed/1 skipped; boundary 47 passed; final Rust 165 passed/6 ignored; combined backend 161 passed/1 skipped plus all 15 quality checks. Two complete browser runs each exposed one redundant-scroll detachment during synthetic startup DOM replacement; link tests were corrected without changing assertions and passed all 90 cases across ten repeated runs. The complete rerun passed 366 tests with eight skips. A separately proven metadata-readiness race in resilience.spec.ts was fixed with an awaited condition; its focused case passed 20 repeats and its suite passed three tests. The later eight-string timing-label clarification passed typecheck and both affected browser tests; it changes no timing or runtime logic.
+The final Apple Silicon app was backed up, installed and opened. Every installed file matched the built bundle; strict signatures passed before and after launch; no Python bundle cache appeared. Existing chat, current model and empty draft were restored. Read-only metadata checks confirmed both tested conversations retained their stored identity, model, provider and reasoning. The final Desktop ZIP `Awaken Bot - Mac - 564df1e2.zip` passed CRC and contained-DMG SHA-256 verification, and its link was delivered.
 
-The first personal Linux build (`168091e4`, run `43088688802`) was packaged, smoke-tested, downloaded, checksum-verified and delivered. The refreshed Linux source `da080a30` includes the final runtime, but run `43096663552` failed before producing jobs; the run page reports an unexpected Actions startup error without a specific cause. One rerun has been requested. Refreshed Windows/Mac CI run `43096614608` remains queued. Earlier `e412b354` Windows compilation/installer collection passed; artifact download returned HTTP 502. Final cross-platform artifact verification is still pending; no public release or merge has been performed.
+Observed checks: UI unit 531 passed; bridge 211 passed/one skipped; boundary 47 passed; local Mac Rust 165 passed/six ignored; combined separate backend 161 passed/one skipped and all 15 quality checks. The full browser rerun passed 366 tests/eight skips after fixing proven startup test synchronization races. The subsequent eight localized timing-label strings passed typecheck and both affected browser tests; no timing/runtime logic changed. App checks and Hermes compatibility CI also passed. Full harness CI run `43099899257` passed: both distribution jobs, both Linux shards, all four Windows shards and the exact-coverage aggregate completed successfully. Root compile, Ruff 0.17.3, all ten generated/document checks, the skill-pack check and selected deterministic documentation claims passed locally.
 
-Sanitized native startup, transfer, reply and CPU observations are in `docs/performance/2026-11-11/`. Cold-start measurements separate probe-clock elapsed time from owner process age and distinguish revision maintenance from a same-revision launch. Native owner/bridge CPU samples do not establish a native CPU improvement; the controlled renderer fixture proves the display-work reduction.
+Personal Linux refresh source: `c5068a451534c03d2f7a46f8bdb5131bc9f0276f`, with runtime paths identical to app source `564df1e2`. Run `43099929486` passed all checks, release AppImage/Debian packaging and packaged startup smoke. The downloaded artifact digest, CRC, source revision and every package checksum passed. The AppImage and Debian package links were delivered; this stays a one-off outside the regular Mac/Windows updater matrix. Earlier transient Actions failures are terminal historical attempts, not current blockers.
+
+Sanitized native startup, history transfer, reply and CPU evidence is in `docs/performance/2026-11-11/`. Startup observations distinguish probe-clock elapsed time from owner age and revision maintenance. Native measurements include the stable app/bridge/three-WebKit cohort and all rejected/excluded attempts; both builds already used little hidden CPU, so no native CPU improvement is claimed. The controlled renderer fixture proves the hidden display-work reduction. `first_progress_ms` is Hermes activity and may be status text; physical provider observations and first reply text establish model stages separately.
