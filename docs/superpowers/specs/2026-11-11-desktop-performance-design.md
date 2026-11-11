@@ -26,7 +26,7 @@ While hidden, replace embedded SMIL orb images with existing still assets, pause
 
 ## Reply timing
 
-Collect bounded, local metadata for sends initiated in Awaken Bot. Measure preparation, submission acknowledgement, turn start, first model progress, first visible response, tool-active wall time and completion. Use canonical admission identity to avoid attributing another turn's activity to the send, including events arriving before its acknowledgement. Missing events or unsupported metadata must remain unknown, not zero.
+Collect bounded, local metadata for sends initiated in Awaken Bot. Measure preparation, submission acknowledgement, turn start, first Hermes activity, first visible response, tool-active wall time and completion. Hermes activity may be a status update; physical provider-request/first-chunk observations and visible response text establish model activity separately. Use canonical admission identity to avoid attributing another turn's activity to the send, including events arriving before its acknowledgement. Missing events or unsupported metadata must remain unknown, not zero.
 
 Provider timings require a provider-request observation; message-start or generic status events cannot prove provider latency. Report combined/unattributed wait honestly until the relevant engine measurement is available. No prompts, response text, hidden reasoning, tool arguments, credentials or raw session identifiers enter a diagnostic report. Keep recent measurements bounded in memory, with no external upload. A read-only diagnostics surface makes the measurements inspectable.
 

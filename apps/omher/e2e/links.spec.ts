@@ -53,7 +53,6 @@ test.beforeEach(async () => {
 test("six bare Slack thread URLs become Slack chips named by their channel, the URL in the tooltip", async ({ page }) => {
   await open(page);
   const b = slackBubble(page);
-  await b.scrollIntoViewIfNeeded();
   const chips = b.getByTestId("link-chip");
   await expect(chips).toHaveCount(7);
   // channels the bot knows get their name; the one it does not know keeps the fallback
@@ -91,7 +90,7 @@ test("six bare Slack thread URLs become Slack chips named by their channel, the 
 test("chips per service: mark, kind and label; a lookalike host stays a plain link", async ({ page }) => {
   await open(page);
   const b = servicesBubble(page);
-  await b.scrollIntoViewIfNeeded();
+  await expect(b).toBeAttached();
   const rows = await b.getByTestId("link-chip").evaluateAll((els) =>
     els.map((a) => [a.getAttribute("data-service"), a.getAttribute("data-kind"), a.querySelector(".lk-t")!.textContent, a.querySelector("svg")!.getAttribute("data-brand") ?? a.querySelector("svg")!.getAttribute("data-src")]),
   );
@@ -141,7 +140,6 @@ test("chips per service: mark, kind and label; a lookalike host stays a plain li
 test("labels are readable at rest and ink on hover; no pill fill at rest", async ({ page }) => {
   await open(page);
   const chip = slackBubble(page).getByTestId("link-chip").first();
-  await chip.scrollIntoViewIfNeeded();
   const lum = (c: string) => {
     const [r, g, b] = c.match(/[\d.]+/g)!.slice(0, 3).map((v) => {
       const s = Number(v) / 255;
