@@ -143,3 +143,13 @@ Agent and CLI marks in `src/assets/agents/` are the projects' own marks, unedite
 Each mark belongs to its owner and is used only to name that tool in the app.
 
 New installations default to dark mode, even on a light operating system. Explicit saved theme choices are respected. The default palette uses off-black surfaces and warm off-white accents; optional colour palettes remain available. The launch backdrop fills every window size, with a separate circular orb and wordmark. Reduced-motion preferences stop both orb animations.
+
+## Conversation performance
+
+Awaken Bot opens the most recent saved messages first and reads older pages when you scroll upward. New Hermes versions provide full-conversation transcript pages; older versions use a compatibility cache of their resume response. Display paging preserves saved history and model context. Oversized messages retain Hermes’ explicit truncation notice.
+
+Initial bot connections show a centered rotating orb and Loading dots over a blurred application. Existing conversations remain readable during reconnects, and permanent errors remain actionable. Hidden windows use still orb assets and pause display clocks while continuing to receive chat events.
+
+Settings → Computer → Response timing shows recent, content-free measurements held in memory on this computer. It separates app delivery, connector activity, observed AI requests and tool wall time. Unsupported or unobserved stages remain unknown. Physical AI request timings require a compatible Hermes backend; the app does not install backend patches.
+
+The implementation contract and measured synthetic evidence are in the [performance design](../../docs/superpowers/specs/2026-11-11-desktop-performance-design.md) and [benchmark recipe](../../docs/performance/2026-11-11/README.md).

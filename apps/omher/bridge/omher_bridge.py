@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import uuid
+from omher_performance import ReplyTimings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack
 from datetime import datetime
@@ -50,6 +51,7 @@ REASONING_LEVELS = ["none", "low", "medium", "high", "xhigh"]
 RUNNING_STATUSES = frozenset({"working", "streaming", "waiting", "starting"})
 MAX_ELSEWHERE = 20
 MAX_OPEN_MESSAGES = 200
+HISTORY_PAGE_ROWS = 60
 PEEK_CHARS = 400
 THINKING_MIN_GAP = 1.0
 CONNECT_TIMEOUT = 60.0
@@ -3231,7 +3233,7 @@ def _row_text(row: dict) -> str:
     return ""
 
 
-def chat_messages(rows) -> list[dict]:
+def chat_messages(rows, *, limit=MAX_OPEN_MESSAGES) -> list[dict]:
     out = []
     for i, row in enumerate(rows or []):
         if not isinstance(row, dict) or row.get("role") not in ("user", "assistant"):
@@ -3247,10 +3249,12 @@ def chat_messages(rows) -> list[dict]:
             text, reply = split_reply_block(text)
         m = {"id": str(rid) if rid is not None else f"m{i}", "role": row["role"], "text": text,
              "ts": float(row.get("timestamp") or 0.0)}
+        if row.get("truncated") is True:
+            m["truncated"] = True
         if reply:
             m["reply_to"] = reply
         out.append(m)
-    return out[-MAX_OPEN_MESSAGES:]
+    return out if limit is None else out[-limit:]
 
 
 # ---------------------------------------------------------------- one Hermes gateway connection
@@ -3301,6 +3305,10 @@ class Conn:
         self.asked: dict[str, tuple[float, float | None]] = {}  # open prompt_id -> (asked at, gateway timeout s)
         self.batches: dict[str, list[str]] = {}  # open batch clarify request id -> question ids, in order
         self.clarify_batch: bool | None = None  # the gateway asks a multi-question clarify as one request
+        self.transcript_paging: bool | None = None
+        self.transcript_scope: str | None = None
+        self.history_cache: list[dict] = []
+        self.history_token = ""
 
     @property
     def connected(self) -> bool:
@@ -3325,6 +3333,7 @@ class Bridge:
         self.eager = eager
         self.clock = clock
         self.poll_s = poll_s
+        self.performance = ReplyTimings(clock)
         self.elsewhere_poll_s = elsewhere_poll_s
         self.conns: dict[str, Conn] = {}
         self.clients: set = set()
@@ -3340,6 +3349,8 @@ class Bridge:
         self._own_plugins: set[tuple[str, str]] = set()
         self.ops = {
             "hello": self.op_hello, "bots.list": self.op_bots_list, "chat.open": self.op_chat_open,
+            "chat.history": self.op_chat_history,
+            "performance.read": self.op_performance_read,
             "chat.send": self.op_chat_send, "chat.interrupt": self.op_chat_interrupt,
             "approval.respond": self.op_approval_respond, "clarify.respond": self.op_clarify_respond,
             "elsewhere.list": self.op_elsewhere_list, "elsewhere.peek": self.op_elsewhere_peek,
@@ -3482,6 +3493,7 @@ class Bridge:
     # ------------------------------------------------------------ connections
 
     async def _default_connect(self, stack: AsyncExitStack, home: Path):
+        import inspect
         from hermes_cli.gateway_client import connect_gateway
         from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint, ensure_gateway_runtime
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -3489,10 +3501,17 @@ class Bridge:
         # An owner still starting must stay pending, without another start request or a
         # minute-long ensure thread behind a process-wide environment lock. Explicit
         # deadlines also prevent cancelled attempts leaving adaptive ensure threads alive.
-        runtime = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=2.0)
+        # This optional official capability separates local-session readiness from messaging
+        # startup. Older Hermes versions keep their normal gate; never patch their runtime.
+        if not hasattr(self, "_runtime_readiness_options"):
+            supported = all("readiness" in inspect.signature(fn).parameters
+                            for fn in (discover_gateway_endpoint, ensure_gateway_runtime))
+            self._runtime_readiness_options = {"readiness": "session"} if supported else {}
+        selection = self._runtime_readiness_options
+        runtime = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=2.0, **selection)
         if runtime.state == "absent":
             runtime = await asyncio.to_thread(ensure_gateway_runtime, home,
-                                             timeout=START_OWNER_TIMEOUT, idle_exit=True)
+                                             timeout=START_OWNER_TIMEOUT, idle_exit=True, **selection)
         if not attachable(runtime):
             if runtime.state == "starting":
                 raise BridgeError("gateway_starting", "Hermes is starting. Awaken Bot will reconnect automatically.")
@@ -3563,6 +3582,9 @@ class Bridge:
 
     async def _drop(self, conn: Conn, *, emit: bool = True, reason: str = "") -> None:
         was_turn = conn.in_turn
+        self.performance.disconnected((conn.name, ''))
+        for folder in conn.folders.values():
+            self.performance.disconnected((conn.name, folder.id))
         pump, stack = conn.pump, conn.stack
         conn.client = conn.stack = conn.pump = None
         conn.in_turn = False
@@ -3573,6 +3595,10 @@ class Bridge:
         conn.asked.clear()
         conn.batches.clear()
         conn.clarify_batch = None
+        conn.transcript_paging = None
+        conn.transcript_scope = None
+        conn.history_cache = []
+        conn.history_token = ""
         if pump is not None and pump is not asyncio.current_task():
             pump.cancel()
             with contextlib.suppress(BaseException):
@@ -3677,8 +3703,12 @@ class Bridge:
 
     async def _main_event(self, conn: Conn, typ: str, params: dict, p: dict, chat: FolderChat | None = None) -> None:
         t = chat or conn
+        self.performance.observe((conn.name, chat.id if chat else ''), typ, params, p)
 
         async def out(event, **fields):
+            admission = params.get('admission_id')
+            if isinstance(admission, str) and 0 < len(admission) <= 256:
+                fields['admission_id'] = admission
             await self._chat_emit(conn, chat, event, **fields)
         if params.get("execution_generation") is not None:
             t.generation = params["execution_generation"]
@@ -3843,10 +3873,21 @@ class Bridge:
 
     async def _ensure_main(self, conn: Conn) -> dict:
         """Find (or create) the bot's ``Bot Chat`` and attach to it. Returns the session snapshot."""
+        if conn.transcript_paging is None:
+            try:
+                description = await self._call(conn, "runtime.describe")
+            except Exception as exc:
+                if not _named(exc, "GatewayRPCError") or str(exc) not in {"method_not_found", "unsupported_method", "unknown_method"}:
+                    raise
+                description = {}
+            capabilities = description.get("capabilities") or []
+            conn.transcript_scope = "conversation" if "session-transcript-conversation-v1" in capabilities else None
+            conn.transcript_paging = "session-transcript-v1" in capabilities
         rows = (await self._call(conn, "session.list", title=BOT_CHAT_TITLE, include_hidden=True, limit=5)).get("sessions") or []
         if rows:
             stored = rows[0].get("resolved_id") or rows[0]["id"]
-            snap = await self._call(conn, "session.resume", session_id=stored)
+            snap = await self._call(conn, "session.resume", session_id=stored,
+                                    **({"omit_messages": True} if conn.transcript_paging else {}))
             snap.setdefault("stored_session_id", stored)
         else:
             snap = await self._call(conn, "session.create", title=BOT_CHAT_TITLE, hidden=True, follow_profile_config=True)
@@ -3874,7 +3915,19 @@ class Bridge:
         bot = conn.bot
         running = bool(snap.get("running") if snap.get("running") is not None else info.get("running"))
         conn.in_turn = running
-        result = {"session_id": conn.main_id, "messages": chat_messages(snap.get("messages")), "running": running,
+        if conn.transcript_paging:
+            page = await self._history_page(conn)
+            messages = page["messages"]
+            history = {"mode": "paged", "cursor": page["next_cursor"]}
+        else:
+            # Compatibility: the old protocol already sent the whole transcript. Keep it only in
+            # bridge memory and page its display rows; no model or stored history is rewritten.
+            conn.history_cache = chat_messages(snap.get("messages"), limit=None)
+            conn.history_token = uuid.uuid4().hex
+            edge = max(0, len(conn.history_cache) - HISTORY_PAGE_ROWS)
+            messages = conn.history_cache[edge:]
+            history = {"mode": "legacy", "cursor": f"{conn.history_token}:{edge}" if edge else None}
+        result = {"session_id": conn.main_id, "messages": messages, "history": history, "running": conn.in_turn,
                   "model": str(info.get("model") or bot["model"]), "provider": str(info.get("provider") or bot["provider"]),
                   "reasoning": str(info.get("reasoning_effort") or bot["reasoning"])}
         prompts = [x for x in (snap.get("prompts") or []) if isinstance(x, dict) and x.get("prompt_id")]
@@ -3891,6 +3944,33 @@ class Bridge:
                 await self._batch_clarify(conn, x)
         return Reply(result, replay if prompts or asks else None)
 
+    async def _history_page(self, conn: Conn, cursor: str | None = None) -> dict:
+        page = await self._call(conn, "session.transcript", session_id=conn.main_id,
+                                order="latest", limit=HISTORY_PAGE_ROWS, inline_images=False,
+                                **({"scope": conn.transcript_scope} if conn.transcript_scope else {}),
+                                **({"cursor": cursor} if cursor is not None else {}))
+        return {"session_id": conn.main_id, "messages": chat_messages(page.get("rows"), limit=None),
+                "next_cursor": page.get("next_cursor"), "reset": page.get("reset") is True}
+
+    async def op_chat_history(self, p) -> dict:
+        cursor = p.get("cursor")
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 1024:
+            raise BridgeError("bad_request", "missing or invalid history cursor")
+        conn = await self._conn(p.get("bot"))
+        if not conn.main_id:
+            raise BridgeError("not_found", "open the bot's chat before reading older messages")
+        if conn.transcript_paging:
+            return await self._history_page(conn, cursor)
+        token, separator, raw_edge = cursor.partition(":")
+        if not separator or token != conn.history_token or not raw_edge.isdecimal():
+            raise BridgeError("bad_request", "history cursor expired; reopen the chat")
+        edge = int(raw_edge)
+        if not 0 < edge <= len(conn.history_cache):
+            raise BridgeError("bad_request", "invalid history cursor")
+        start = max(0, edge - HISTORY_PAGE_ROWS)
+        return {"session_id": conn.main_id, "messages": conn.history_cache[start:edge],
+                "next_cursor": f"{token}:{start}" if start else None, "reset": False}
+
     async def _target(self, conn: Conn, p: dict) -> tuple[str, FolderChat | None]:
         """The chat an op acts on: the main chat, or with ``session`` a folder chat this bridge created. Any
         other id (a client-supplied ``session_id``, another session's id) is never used."""
@@ -3903,6 +3983,7 @@ class Bridge:
         return chat.runtime_id, chat
 
     async def op_chat_send(self, p) -> dict:
+        received_at = self.clock()
         text = p.get("text")
         if not isinstance(text, str) or not text.strip():
             raise BridgeError("bad_request", "missing text")
@@ -3921,9 +4002,23 @@ class Bridge:
                 raise BridgeError("bad_request", "that session has no thread to reply in")
             text = f"{text.rstrip()}\n\n{reply_block(*ref)}"
         input_id = str(uuid.uuid4())
-        await self._probe_clarify_batch(conn)
-        await self._submit(conn, main, text, input_id)
-        return {"input_id": input_id}
+        trace = self.performance.begin((conn.name, _chat.id if _chat else ''), input_id, started=received_at)
+        try:
+            await self._probe_clarify_batch(conn)
+            self.performance.prepared(trace)
+            receipt = await self._submit(conn, main, text, input_id)
+            self.performance.accepted(trace, receipt)
+        except BaseException:
+            self.performance.failed(trace)
+            raise
+        result = {"input_id": input_id, "trace_id": trace.trace_id}
+        if isinstance(receipt, dict) and isinstance(receipt.get('admission_id'), str):
+            result['admission_id'] = receipt['admission_id']
+        return result
+
+    async def op_performance_read(self, _p) -> dict:
+        """Read only bounded local durations; no model call, content, file or network I/O."""
+        return self.performance.snapshot()
 
     async def _probe_clarify_batch(self, conn: Conn) -> None:
         """Ask once per connection whether the gateway can send a turn's several clarify questions as one

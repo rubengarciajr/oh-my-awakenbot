@@ -1,20 +1,15 @@
 // One-line plain fallbacks used until a feature node registers its slot.
-import { useEffect, useState } from "react";
 import type { ActivitySlotProps, CardsSlotProps, ElsewhereLineSlotProps, RoutineLineSlotProps } from "../../features";
 import { SourceIcon, Spinner } from "../../ui";
 import { elapsed, hhmm } from "../../app/time";
 import { t as tr } from "../../i18n";
 import { WORKING } from "../../state/store";
+import { useNow } from "../../elsewhere/useNow";
 
 export function ActivityFallback({ item, live }: ActivitySlotProps) {
   const t = item.turn;
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!live) return;
-    const h = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(h);
-  }, [live]);
-  const ms = (t.endedAt ?? Date.now()) - t.startedAt;
+  const now = useNow(live, 1000);
+  const ms = (t.endedAt ?? now) - t.startedAt;
   let text: string;
   if (live) text = !t.status || t.status === WORKING ? tr("act.working") : t.status;
   else if (t.outcome === "interrupted") text = tr("act.stopped", { t: elapsed(ms) });

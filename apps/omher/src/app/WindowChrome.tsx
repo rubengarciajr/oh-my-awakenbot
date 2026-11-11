@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "../i18n";
 import { useStore } from "../state/store";
+import { startVisualActivity } from "./visualActivity";
 import "./window-chrome.css";
 
 type ChromeWindow = Pick<ReturnType<typeof getCurrentWindow>, "close" | "minimize" | "toggleMaximize" | "isMaximized" | "onResized">;
@@ -13,6 +14,7 @@ const nativeWindow = (): ChromeWindow | null => window.__AWAKEN_DESKTOP__ ??
 
 /** Lives outside launch/setup so the person can always move, minimize or close the app. */
 export function WindowChrome({ children }: { children: ReactNode }) {
+  useEffect(startVisualActivity, []);
   // Keep the chrome's accessible labels in step with the person's explicit language choice.
   useStore();
   const [maximized, setMaximized] = useState(false);

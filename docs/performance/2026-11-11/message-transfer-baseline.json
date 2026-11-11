@@ -1,0 +1,58 @@
+{
+  "scope": "Read-only baseline samples from the same existing local Bot Chat; message content and session identifiers excluded",
+  "selection": "All three sequential baseline samples, no discarded sample",
+  "product_source": "67b03567",
+  "samples": [
+    {
+      "seconds": 3.083,
+      "display_messages": 198,
+      "ui_reply_bytes": 359326,
+      "rpc": [
+        {
+          "method": "session.list",
+          "seconds": 0.078,
+          "bytes": 288
+        },
+        {
+          "method": "session.resume",
+          "seconds": 2.645,
+          "bytes": 3175615
+        }
+      ]
+    },
+    {
+      "seconds": 0.622,
+      "display_messages": 198,
+      "ui_reply_bytes": 359326,
+      "rpc": [
+        {
+          "method": "session.list",
+          "seconds": 0.014,
+          "bytes": 288
+        },
+        {
+          "method": "session.resume",
+          "seconds": 0.596,
+          "bytes": 3175615
+        }
+      ]
+    },
+    {
+      "seconds": 3.022,
+      "display_messages": 198,
+      "ui_reply_bytes": 359326,
+      "rpc": [
+        {
+          "method": "session.list",
+          "seconds": 0.005,
+          "bytes": 288
+        },
+        {
+          "method": "session.resume",
+          "seconds": 3.004,
+          "bytes": 3175615
+        }
+      ]
+    }
+  ]
+}

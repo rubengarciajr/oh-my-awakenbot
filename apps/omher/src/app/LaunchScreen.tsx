@@ -1,12 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import "./launch.css";
 import { introForLaunch, recordIntroShown } from "./launchIntro";
+import { useVisualActivity } from "./visualActivity";
 
 const BACKGROUNDS = ["charcoal", "quiet-studio"] as const;
 const SPLASH_DURATION = 5_000;
 
 /** The daily desktop intro runs alongside bridge startup, then reveals setup or the workspace. */
 export function LaunchScreen({ children }: { children: ReactNode }) {
+  const active = useVisualActivity();
   const [launch] = useState(() => introForLaunch({
     native: "__TAURI_INTERNALS__" in window, force: "__AWAKEN_SPLASH__" in window,
   }));
@@ -35,7 +37,7 @@ export function LaunchScreen({ children }: { children: ReactNode }) {
       {visible && (
         <div className="launch-screen" data-background={background} data-testid="launch-screen">
           <img
-            src={`/brand/splash-${background}${reducedMotion ? "-still" : ""}.svg`}
+            src={`/brand/splash-${background}${reducedMotion || !active ? "-still" : ""}.svg`}
             alt=""
             className="launch-orb"
             width={576}

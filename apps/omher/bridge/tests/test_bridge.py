@@ -350,7 +350,10 @@ class BotsAndChat(BridgeCase):
             self.assertEqual(sub[0]["session_id"], MAIN_RUNTIME)
             self.assertEqual(sub[0]["text"], "hello there")
             self.assertRegex(sub[0]["input_id"], r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-            self.assertEqual(r["result"], {"input_id": sub[0]["input_id"]})
+            self.assertEqual(r["result"]["input_id"], sub[0]["input_id"])
+            self.assertRegex(r["result"]["trace_id"], r"^[0-9a-f]{32}$")
+            self.assertEqual(r["result"]["admission_id"], "adm1")
+            self.assertEqual(set(r["result"]), {"input_id", "trace_id", "admission_id"})
             # a client-supplied session_id is ignored, never forwarded
             r = await s.req("chat.send", bot="kami", text="again", session_id="20261108_235229_aaaf70c4")
             self.assertTrue(r["ok"])

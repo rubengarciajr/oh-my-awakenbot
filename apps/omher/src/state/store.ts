@@ -15,6 +15,8 @@ import type {
   Bot,
   BridgeEvent,
   ChatOpenResult,
+  PerformanceSnapshot,
+  ChatHistoryResult,
   ClarifyAnswers,
   ClarifyQuestion,
   HelloResult,
@@ -75,6 +77,7 @@ export interface Turn {
 
 /** Timeline items. `ts` is seconds since epoch so chat rows and away lines sort together. */
 export type MessageItem = {
+  truncated?: boolean;
   kind: "user" | "assistant";
   id: string;
   ts: number;
@@ -184,6 +187,7 @@ export interface Chat {
   loaded: boolean;
   sessionId: string | null;
   turnSeq: number;
+  history?: { mode: "paged" | "legacy"; cursor: string | null; loading: boolean; error: string | null; window: number; ids: string[] };
   /** Set when chat.open failed (bot offline, gateway refused); the timeline shows it instead of loading forever. */
   openError?: string | null;
   /** Typed failure class: startup/transient recovery is separate from a semantic refusal. */
@@ -497,26 +501,32 @@ export function replyChipFor(a: Away): ReplyChip | null {
 }
 const SOURCE_NAMES: Record<string, string> = { slack: "Slack", discord: "Discord", telegram: "Telegram" };
 
+/** Match a saved acknowledgement of a local row without losing its picked files or typed text. */
+function coveredBySaved(server: MessageItem[], item: MessageItem): boolean {
+  const twin = server.find((s) => s.id === item.id) ?? (item.id.startsWith("local-")
+    ? server.find((s) => s.kind === "user" && s.text === (item.sent ?? item.text) && s.ts >= item.ts - 120)
+    : undefined);
+  if (!twin) return false;
+  if (item.kind === "user" && twin.kind === "user" && (item.files || item.sent)) {
+    Object.assign(twin, { text: item.text, sent: item.sent ?? item.text, ...(item.files ? { files: item.files } : {}) });
+  }
+  return true;
+}
+
 function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string): Chat {
   const server: MessageItem[] = res.messages.map((m) => ({
     kind: m.role,
     id: m.id,
     ts: m.ts,
     text: m.text,
+    ...(m.truncated ? { truncated: true } : {}),
     ...(m.reply_to ? { reply: replyOf(m.reply_to) } : {}),
   }));
-  const ids = new Set(server.map((m) => m.id));
   const lastServerTs = server.length ? server[server.length - 1].ts : 0;
   const keep = chat.items.filter((i) => {
     if (i.kind !== "user" && i.kind !== "assistant") return true;
-    if (ids.has(i.id)) return false;
-    if (i.id.startsWith("local-")) {
-      const sent = i.sent ?? i.text;
-      const twin = server.find((s) => s.kind === "user" && s.text === sent && s.ts >= i.ts - 120);
-      // keep the local pictures, and the text as typed (skill tokens go out hoisted)
-      if (twin && (i.files || i.sent)) Object.assign(twin, { text: i.text, sent, ...(i.files ? { files: i.files } : {}) });
-      return !twin;
-    }
+    if (coveredBySaved(server, i)) return false;
+    if (i.id.startsWith("local-")) return true;
     return i.ts >= lastServerTs;
   });
   let next: Chat = {
@@ -526,6 +536,7 @@ function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string):
     reasoning: res.reasoning,
     loaded: true,
     sessionId: res.session_id,
+    history: res.history ? { ...res.history, loading: false, error: null, window: (chat.history?.window ?? 0) + 1, ids: server.map((m) => m.id) } : undefined,
   };
   if (res.running && !next.turn) {
     next = newTurn(next, bot, now, WORKING)[0];
@@ -533,6 +544,24 @@ function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string):
     next = endTurn(next, now, "done");
   }
   return next;
+}
+
+function applyHistory(chat: Chat, res: ChatHistoryResult): Chat {
+  const history = chat.history!;
+  const priorIds = new Set(history.ids);
+  const server: MessageItem[] = res.messages.map((m) => ({
+    kind: m.role, id: m.id, text: m.text, ts: m.ts, ...(m.truncated ? { truncated: true } : {}),
+    ...(m.reply_to ? { reply: replyOf(m.reply_to) } : {}),
+  }));
+  const kept = res.reset ? chat.items.filter((i) => {
+    if (i.kind !== "user" && i.kind !== "assistant") return true;
+    if (coveredBySaved(server, i)) return false;
+    return !priorIds.has(i.id);
+  }) : chat.items;
+  const present = new Set(kept.map((i) => i.id));
+  const older = server.filter((m) => !present.has(m.id));
+  return { ...withItems(chat, mergeByTs(older, kept)), history: { ...history, cursor: res.next_cursor,
+    loading: false, error: null, ids: [...new Set([...(res.reset ? [] : history.ids), ...res.messages.map((m) => m.id)])] } };
 }
 
 // ---- reducer --------------------------------------------------------------------------------
@@ -545,6 +574,8 @@ export type Action =
   | { type: "bots"; bots: Bot[] }
   | { type: "select"; bot: string }
   | { type: "chat.opened"; bot: string; res: ChatOpenResult; now: number }
+  | { type: "chat.history"; bot: string; sessionId: string; cursor: string; window: number; res: ChatHistoryResult }
+  | { type: "chat.history.loading"; bot: string; loading: boolean; error?: string }
   | {
       type: "local.user";
       bot: string;
@@ -815,6 +846,11 @@ export function reduce(state: AppState, a: Action): AppState {
       return { ...state, selectedBot: a.bot, unread: { ...state.unread, [a.bot]: 0 }, ui: { ...state.ui, view: "chat" } };
     case "chat.opened":
       return touchChat(state, a.bot, (c) => ({ ...applyOpened(c, a.res, a.now, a.bot), openError: null, openErrorCode: null }));
+    case "chat.history":
+      return touchChat(state, a.bot, (c) => c.sessionId === a.sessionId && a.res.session_id === c.sessionId
+        && c.history?.cursor === a.cursor && c.history.window === a.window ? applyHistory(c, a.res) : c);
+    case "chat.history.loading":
+      return touchChat(state, a.bot, (c) => c.history ? { ...c, history: { ...c.history, loading: a.loading, error: a.error ?? null } } : c);
     case "local.user":
       return touchChat(state, a.bot, (c) =>
         withItems(c, [
@@ -1079,6 +1115,8 @@ export interface Actions {
   /** A text answer for one question, or every answer of an interview at once (one `clarify.respond`). */
   respondClarify(requestId: string, answer: string | ClarifyAnswers, bot?: string): Promise<void>;
   loadElsewhere(bot?: string): Promise<void>;
+  /** Read the next older display page without changing Hermes' saved conversation or model context. */
+  loadHistory(bot: string): Promise<void>;
   loadRoutines(bot?: string): Promise<void>;
   /** Re-read every bot's automations (files only; no gateway). */
   loadAutomations(): Promise<void>;
@@ -1160,6 +1198,7 @@ export interface Actions {
   cliTitle(agent: "claude" | "codex", session: string, cwd?: string): Promise<{ title: string }>;
   /** Subscription usage meters (sidebar); the meter keeps its own copy. */
   usage(): Promise<{ providers: UsageProvider[] }>;
+  performance(): Promise<PerformanceSnapshot>;
   /** Settings › Accounts (the page keeps its own copy). */
   accounts(): Promise<{ groups: AccountGroup[] }>;
   addAccount(cli: AccountCli, label: string): Promise<{ id: string; dir: string }>;
@@ -1235,6 +1274,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   const skillLists = new Map<string, Promise<Skill[]>>();
   const skillNames = new Map<string, string[]>();
   const chatReads = new Map<string, Promise<void>>();
+  const historyReads = new Map<string, Promise<void>>();
   let connectionEpoch = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let retryAttempt = 0;
@@ -1309,6 +1349,27 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     return read;
   };
   const metadataFailed = (e: unknown) => { if (!chatReadRecoverable(errCode(e))) fail(e); };
+  const loadHistory = (bot: string): Promise<void> => {
+    const pending = historyReads.get(bot);
+    if (pending) return pending;
+    const chat = state.chats[bot], history = chat?.history;
+    if (state.conn !== "open" || !chat?.sessionId || !history?.cursor || chat.openError || chatReads.has(bot)) return Promise.resolve();
+    const sessionId = chat.sessionId, cursor = history.cursor, window = history.window, epoch = connectionEpoch;
+    dispatch({ type: "chat.history.loading", bot, loading: true });
+    const current = () => epoch === connectionEpoch && state.conn === "open" && state.chats[bot]?.history?.window === window;
+    const read = (async () => {
+      try {
+        const res = await bridge.request("chat.history", { bot, cursor });
+        if (current()) dispatch({ type: "chat.history", bot, sessionId, cursor, window, res });
+      } catch (e) {
+        if (current()) dispatch({ type: "chat.history.loading", bot, loading: false, error: errText(e) });
+      }
+    })();
+    historyReads.set(bot, read);
+    const release = () => { if (historyReads.get(bot) === read) historyReads.delete(bot); };
+    void read.then(release, release);
+    return read;
+  };
   const loadElsewhere = async (bot?: string) => {
     const b = botArg(bot);
     if (!b || state.conn !== "open") return;
@@ -1396,6 +1457,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
           retryAttempt = 0;
           retryBot = null;
           chatReads.clear();
+          historyReads.clear();
         }
         dispatch({ type: "conn", status, now: now() });
         if (status === "open") {
@@ -1542,6 +1604,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       }
     },
     loadElsewhere,
+    loadHistory,
     loadRoutines,
     loadAutomations,
     loadModels,
@@ -1714,6 +1777,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     cliTitle: (agent, session, cwd) => bridge.request("cli.title", { agent, session, ...(cwd ? { cwd } : {}) }),
     usage: () => bridge.request("usage.read", {}),
     accounts: () => bridge.request("accounts.list", {}),
+    performance: () => bridge.request("performance.read", {}),
     addAccount: (cli, label) => bridge.request("accounts.add", { cli, label }),
     async setActiveAccount(cli, id) {
       await bridge.request("accounts.set_active", { cli, account: id });
