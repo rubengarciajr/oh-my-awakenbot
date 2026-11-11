@@ -357,7 +357,7 @@ function fakeBridge() {
     emit: (ev: BridgeEvent) => anyH!(ev),
     status: (s: BridgeStatus) => statusH!(s),
     setHistory: (h: typeof history) => (history = h),
-    setOffline: (bot: string) => offline.add(bot),
+    setOffline: (bot: string, on = true) => on ? offline.add(bot) : offline.delete(bot),
     setRunning: (r: boolean) => (running = r),
   };
 }
@@ -505,6 +505,23 @@ describe("store", () => {
     const c = store.getState().chats.friren;
     expect(c.loaded).toBe(true);
     expect(c.openError).toMatch(/gateway could not start/);
+  });
+
+  it("retries a failed chat when picked again after Hermes becomes ready", async () => {
+    const f = fakeBridge();
+    f.setOffline("friren");
+    const store = createStore(f.bridge, { now: () => T0 });
+    await store.actions.init();
+    await store.actions.selectBot("friren");
+    expect(store.getState().chats.friren.openError).toMatch(/gateway could not start/);
+    f.setOffline("friren", false);
+    await store.actions.selectBot("friren");
+    expect(store.getState().chats.friren.openError).toBeNull();
+    expect(store.getState().chats.friren.messages[0].text).toBe("hi");
+    const opens = f.calls.filter((c) => c.op === "chat.open").length;
+    await store.actions.selectBot("friren");
+    expect(f.calls.filter((c) => c.op === "chat.open")).toHaveLength(opens);
+    expect(f.calls.some((c) => c.op === "chat.send")).toBe(false);
   });
 
   it("ui actions", async () => {

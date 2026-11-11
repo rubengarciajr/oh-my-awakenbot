@@ -1291,7 +1291,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   const selectBot = async (bot: string) => {
     dispatch({ type: "select", bot });
     const jobs: Promise<unknown>[] = [loadElsewhere(bot), loadRoutines(bot), loadModels(bot)];
-    if (!state.chats[bot]?.loaded) jobs.push(loadChat(bot).catch(fail));
+    if (!state.chats[bot]?.loaded || state.chats[bot]?.openError) jobs.push(loadChat(bot).catch(fail));
     await Promise.all(jobs);
   };
 
