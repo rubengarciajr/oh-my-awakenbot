@@ -37,7 +37,7 @@ The approved vector masters are in `brand/`; app assets are generated with:
 
 ```sh
 node scripts/brand-assets.mjs
-pnpm tauri icon ../../brand/app-icon.svg --output /tmp/awaken-icons
+pnpm tauri icon ../../brand/app-icon.png --output /tmp/awaken-icons
 # Copy the desktop PNG, ICO and ICNS outputs into src-tauri/icons/; mobile outputs are not shipped.
 ```
 

@@ -52,7 +52,7 @@ test("sidebar lists the mock bots and search filters them", async ({ page }) => 
   await open(page);
   const side = page.getByTestId("sidebar");
   for (const name of ["Kami", "Friren", "Hermes"]) await expect(side.getByText(name, { exact: true })).toBeVisible();
-  await expect(side.getByText("omher", { exact: true })).toBeVisible();
+  await expect(side.getByText("AWAKEN BOT", { exact: true })).toBeVisible();
   for (const nav of ["Settings", "You"]) await expect(side.getByText(nav, { exact: true })).toBeVisible();
   // Automations (with every bot's job count) and Plugins open their pages
   await expect(side.getByTestId("nav-automations")).toHaveText("Automations6");

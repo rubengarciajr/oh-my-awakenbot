@@ -1,5 +1,23 @@
 import { expect, test } from "@playwright/test";
 
+test("native icon export keeps the bright ice orb instead of flattening it to black", async ({ page }) => {
+  await page.goto("/");
+  const pixel = await page.evaluate(async () => {
+    const image = new Image();
+    image.src = "/src-tauri/icons/128x128.png";
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 128;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(image, 0, 0);
+    return [...ctx.getImageData(64, 42, 1, 1).data];
+  });
+  expect(pixel[0]).toBeGreaterThan(150);
+  expect(pixel[1]).toBeGreaterThan(150);
+  expect(pixel[2]).toBeGreaterThan(150);
+  expect(pixel[3]).toBe(255);
+});
+
 for (const [random, theme] of [[0.1, "charcoal"], [0.9, "quiet-studio"]] as const) {
   test(`launch uses ${theme}, stays for five seconds, then reveals the app`, async ({ page }) => {
     await page.clock.install({ time: new Date("2026-11-11T12:00:00Z") });

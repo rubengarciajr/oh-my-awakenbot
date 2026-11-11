@@ -107,7 +107,7 @@ test("a running Claude Code chat has the +, and paste, pick and drop each add a 
   expect(c.filter((x) => x.op === "file.save").map((x) => x.name)).toEqual(["image.png", "notes.txt", "data.csv"]);
   const input = c.filter((x) => x.op === "chat.input").pop()!.input!;
   expect(input.images).toEqual([expect.stringMatching(/\/\.omher\/session-files\/s\d+\/1-image\.png$/)]);
-  expect(input.text).toMatch(/^what is in these\?\n\nAttached files \(copies omher saved; open them with your tools\):\n- .*1-notes\.txt\n- .*1-data\.csv$/);
+  expect(input.text).toMatch(/^what is in these\?\n\nAttached files \(copies AWAKEN BOT saved; open them with your tools\):\n- .*1-notes\.txt\n- .*1-data\.csv$/);
   // the agent answered the picture
   await expect(page.getByTestId("bubble-bot").last()).toContainText("(1 picture)");
 });

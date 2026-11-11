@@ -110,7 +110,7 @@ for (const theme of ["dark", "light"] as const) {
       const dlg = page.getByTestId("update-confirm");
       await expect(dlg).toBeVisible();
       await expect(dlg.getByRole("heading")).toHaveText("Update to 0.2.3?");
-      await expect(dlg).toContainText("omher will restart. Your chats, panels and sessions pick up where you left off.");
+      await expect(dlg).toContainText("AWAKEN BOT will restart. Your chats, panels and sessions pick up where you left off.");
       // each "folder (Agent)" is kept on one line (no-break spaces)
       expect((await page.getByTestId("update-running").textContent())!.replace(/\u00a0/g, " ")).toBe(
         "2 sessions running: api (Codex), web-app (Claude Code). They resume after the restart.",
@@ -282,7 +282,7 @@ test("after a restart: Claude Code and Codex continue by themselves, pi waits fo
   // pi: one click starts it again in the same folder, once
   await pi.locator(".ss-open").click();
   await expect(page.getByTestId("session-status")).toHaveText("Paused");
-  await expect(page.getByTestId("session-paused")).toContainText("Paused when omher restarted");
+  await expect(page.getByTestId("session-paused")).toContainText("Paused when AWAKEN BOT restarted");
   await page.getByTestId("session-resume").click();
   await expect(page.getByTestId("session-status")).toHaveText("Ready");
   await expect(page.getByTestId("session-paused")).toHaveCount(0);
