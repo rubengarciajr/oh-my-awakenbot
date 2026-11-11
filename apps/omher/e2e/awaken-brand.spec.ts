@@ -44,6 +44,71 @@ for (const [random, theme] of [[0.1, "charcoal"], [0.9, "quiet-studio"]] as cons
   });
 }
 
+test.describe("daily native intro", () => {
+  test.use({ timezoneId: "America/Chicago" });
+
+  test("first local day shows five seconds, fresh same-day launch skips, next day shows again", async ({ page, context }) => {
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" });
+      const calls: number[] = [];
+      Object.assign(window, {
+        __INTRO_GATE_CALLS__: calls,
+        __TAURI_INTERNALS__: {
+          invoke: async () => null,
+          transformCallback: () => 0,
+          metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+        },
+        __OMHER_GATE__: { status: async () => { calls.push(Date.now()); return { state: "starting" }; } },
+      });
+    });
+    // UTC is already Nov 12: the intro marker must still say the local calendar's Nov 11.
+    const firstTime = new Date("2026-11-11T23:30:00-06:00");
+    await page.clock.install({ time: firstTime });
+    await page.clock.pauseAt(firstTime);
+    await page.goto("/");
+    const splash = page.getByTestId("launch-screen");
+    await expect(splash).toBeVisible();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("awaken.launch-intro-day"))).toBe("2026-11-11");
+    await expect(page.locator(".launch-content")).toHaveAttribute("inert", "");
+    await page.clock.fastForward(1000);
+    expect(await page.evaluate(() => (window as unknown as { __INTRO_GATE_CALLS__: number[] }).__INTRO_GATE_CALLS__.length)).toBeGreaterThan(1);
+    await page.clock.fastForward(3999);
+    await expect(splash).toBeVisible();
+    await page.clock.fastForward(1);
+    await expect(splash).toHaveCount(0);
+    await expect(page.getByTestId("bridge-gate")).toBeVisible();
+    await page.close();
+
+    // A new page has a fresh JS runtime, like reopening the app, but shares its saved local day.
+    const sameDay = await context.newPage();
+    await sameDay.clock.install({ time: firstTime });
+    await sameDay.clock.pauseAt(firstTime);
+    await sameDay.goto("/");
+    await expect(sameDay.getByTestId("bridge-gate")).toBeVisible();
+    await expect(sameDay.getByTestId("launch-screen")).toHaveCount(0);
+    await expect(sameDay.locator(".launch-content")).not.toHaveAttribute("inert", "");
+    await sameDay.close();
+
+    const nextDay = await context.newPage();
+    const nextTime = new Date("2026-11-12T09:00:00-06:00");
+    await nextDay.clock.install({ time: nextTime });
+    await nextDay.clock.pauseAt(nextTime);
+    await nextDay.goto("/");
+    await expect(nextDay.getByTestId("launch-screen")).toBeVisible();
+    await expect.poll(() => nextDay.evaluate(() => localStorage.getItem("awaken.launch-intro-day"))).toBe("2026-11-12");
+    await nextDay.clock.fastForward(5000);
+    await expect(nextDay.getByTestId("launch-screen")).toHaveCount(0);
+    await nextDay.close();
+  });
+});
+
+test("ordinary browser preview never shows or records the daily intro", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("sidebar")).toBeVisible();
+  await expect(page.getByTestId("launch-screen")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("awaken.launch-intro-day"))).toBeNull();
+});
+
 test("dark mode uses the AWAKEN off-black and off-white palette", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await page.goto("/");

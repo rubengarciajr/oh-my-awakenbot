@@ -6,6 +6,7 @@ mod hermes_auth;
 mod session_files;
 mod sessions;
 mod setup;
+mod window_lifecycle;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -464,6 +465,8 @@ pub fn run() {
             open_hermes_auth
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            window_lifecycle::install_menu(app)?;
             let bridge = Bridge::new();
             let resource_dir = app.path().resource_dir().ok();
             bridge.start(resource_dir.clone());
@@ -481,6 +484,8 @@ pub fn run() {
         .expect("error while building AWAKEN BOT");
 
     app.run(|handle, event| {
+        #[cfg(target_os = "macos")]
+        window_lifecycle::on_event(handle, &event);
         if let RunEvent::Exit = event {
             if let Some(shell) = handle.try_state::<Shell>() {
                 shell.sessions.close_all();

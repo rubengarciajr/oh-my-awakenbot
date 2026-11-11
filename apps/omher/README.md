@@ -38,6 +38,10 @@ selection and show the actual error. Model changes do not send a chat message.
 Native windows use an off-black draggable title area, available during launch and setup too.
 macOS overlays this area with native traffic lights and keeps its rounded window corners and
 standard window-manager behavior. Windows uses an undecorated window with custom controls.
+On macOS, closing the window keeps the app, bridge and current chats ready in the background.
+Click its Dock icon or choose **Window → Show Awaken Bot** to return to the same workspace.
+**Awaken Bot → Quit Awaken Bot** (⌘Q) quits the app and stops its bridge and child coding sessions.
+Windows closes and exits normally.
 
 Chat opening recognizes a starting Hermes gateway, displays its startup status, and retries
 read-only opening automatically. Saved messages remain visible across reconnects. The selected
@@ -46,8 +50,9 @@ Permanent protocol or permission refusals show their actual reason rather than r
 
 ## Branding and launch
 
-The launch screen lasts five seconds while the bridge starts in the background. Each launch independently
-chooses Charcoal or Quiet studio, with equal probability, and keeps that background throughout the launch.
+The first desktop launch of each local day shows the five-second intro while the bridge starts in the
+background. Later launches that day skip it. Each showing independently chooses Charcoal or Quiet studio,
+with equal probability, and keeps that background throughout the intro.
 The outer orb stays circular; liquid currents, dot texture and a pulsing glow move inside it.
 Reduced motion uses a still image. After five seconds, setup, the workspace or a connection error appears.
 
