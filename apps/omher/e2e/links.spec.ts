@@ -175,7 +175,7 @@ test("a chip opens its URL through the opener, once, and a lookalike link is not
   const opened = await catchOpens(page);
   await open(page);
   const chip = slackBubble(page).getByTestId("link-chip").first();
-  await chip.scrollIntoViewIfNeeded();
+  // Click scrolls and retries if background bot snapshots replace the initial markdown link.
   await chip.click();
   await expect.poll(() => opened).toEqual(["https://sionicai.slack.com/archives/C0BLC924P1P/p1794195216893139"]);
   const yt = servicesBubble(page).locator('[data-testid=link-chip][data-service="youtube"]');
