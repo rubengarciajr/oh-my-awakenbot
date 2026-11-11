@@ -66,7 +66,7 @@ test("defaults: OMH colours, soft bubbles, small text", async ({ page }) => {
 
 test("colour set: picking one repaints your bubble, links and accent, and the logo stays", async ({ page }) => {
   await open(page);
-  const logoBefore = await page.locator(".brand b").evaluate((e) => getComputedStyle(e).backgroundImage);
+  const logoBefore = await page.locator(".brand .church-wordmark").evaluate((e) => getComputedStyle(e).backgroundImage);
   const meBefore = await css(page, "bubble-user", "background-color");
   await appearance(page);
   await expect(page.getByTestId("palette-omh")).toHaveAttribute("aria-checked", "true");
@@ -81,7 +81,7 @@ test("colour set: picking one repaints your bubble, links and accent, and the lo
   await page.getByRole("button", { name: "Close settings" }).click();
   expect(await css(page, "bubble-user", "background-color")).not.toBe(meBefore);
   expect(await css(page, "bubble-user", "background-color")).toBe("rgb(31, 49, 80)"); // #1f3150
-  expect(await page.locator(".brand b").evaluate((e) => getComputedStyle(e).backgroundImage)).toBe(logoBefore);
+  expect(await page.locator(".brand .church-wordmark").evaluate((e) => getComputedStyle(e).backgroundImage)).toBe(logoBefore);
   // light theme has its own tint for the same set
   await page.evaluate(async () => {
     const m = await import(/* @vite-ignore */ "/src/state/store.ts");

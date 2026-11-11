@@ -20,9 +20,9 @@ describe("attach helpers", () => {
   it("the message names each saved copy after the text, in plain words", () => {
     expect(wireText("  hi ", [])).toBe("hi");
     expect(wireText("read it", ["/h/.omher/session-files/s1/1-notes.txt"])).toBe(
-      "read it\n\nAttached file (a copy AWAKEN BOT saved; open it with your tools):\n- /h/.omher/session-files/s1/1-notes.txt",
+      "read it\n\nAttached file (a copy Awaken Church saved; open it with your tools):\n- /h/.omher/session-files/s1/1-notes.txt",
     );
-    expect(wireText("", ["/a/1-x.pdf", "/a/2-y.csv"])).toBe("Attached files (copies AWAKEN BOT saved; open them with your tools):\n- /a/1-x.pdf\n- /a/2-y.csv");
+    expect(wireText("", ["/a/1-x.pdf", "/a/2-y.csv"])).toBe("Attached files (copies Awaken Church saved; open them with your tools):\n- /a/1-x.pdf\n- /a/2-y.csv");
   });
 
   it("a dropped path is typed bare when plain, else quoted for the shell", () => {
@@ -108,7 +108,7 @@ describe("files in a session chat", () => {
     const send = calls().filter((c) => c.op === "chat.input").pop()!;
     expect(send.input).toEqual({
       kind: "send",
-      text: `what is this?\n\nAttached file (a copy AWAKEN BOT saved; open it with your tools):\n- /Users/you/.omher/session-files/${id}/1-notes.txt`,
+      text: `what is this?\n\nAttached file (a copy Awaken Church saved; open it with your tools):\n- /Users/you/.omher/session-files/${id}/1-notes.txt`,
       images: [`/Users/you/.omher/session-files/${id}/1-shot.png`],
     });
     // the bubble shows the text as typed and both files

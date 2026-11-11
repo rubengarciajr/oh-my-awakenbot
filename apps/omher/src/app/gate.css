@@ -52,7 +52,9 @@
   max-width: none;
   gap: 14px;
 }
-.gate-mark {
+.orb-mark.gate-mark {
+  width: 44px;
+  height: 44px;
   display: block;
   margin-bottom: 2px;
 }

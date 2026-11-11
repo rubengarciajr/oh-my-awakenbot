@@ -100,7 +100,7 @@ test("a row opens its detail: when, what, where it delivers, last run, and the n
   await expect(d).toContainText('You can also change it by telling Kami in chat');
   // a job delivered to the bot's own chat says so
   await page.getByTestId("auto-row-a1f0c2d9e801").click();
-  await expect(d.getByTestId("auto-deliver")).toHaveText("Kami chat (AWAKEN BOT)");
+  await expect(d.getByTestId("auto-deliver")).toHaveText("Kami chat (Awaken Church)");
   // primary action is the neutral ink fill, never the accent gradient
   const bg = await d.getByTestId("auto-run").evaluate((el) => getComputedStyle(el).backgroundImage);
   expect(bg).toBe("none");
@@ -181,7 +181,7 @@ test("New adds through cron.manage; Hermes' refusal shows as its own words", asy
   await expect(form).toHaveCount(0);
   await expect(page.getByTestId("auto-list").getByRole("listitem")).toHaveCount(7);
   await expect(page.getByTestId("auto-detail").getByRole("heading")).toHaveText("Standup notes");
-  await expect(page.getByTestId("auto-deliver")).toHaveText("Kami chat (AWAKEN BOT)");
+  await expect(page.getByTestId("auto-deliver")).toHaveText("Kami chat (Awaken Church)");
   const adds = (await calls("automations.add")).map((c) => c.params);
   expect(adds[1]).toEqual({ bot: "kami", name: "Standup notes", schedule: "0 9 * * 1-5", prompt: "Collect yesterday's merged PRs into standup notes.", deliver: "bot-chat:kami" });
 });
@@ -194,7 +194,7 @@ test("an automation the bot made in chat leaves a card there: run, open, undo", 
   await expect(card).toContainText("CI watch on my PRs");
   await expect(card).toContainText("New automation");
   await expect(card).toContainText("every 15 min");
-  await expect(card).toContainText("Kami chat (AWAKEN BOT)");
+  await expect(card).toContainText("Kami chat (Awaken Church)");
   await expect(page.getByTestId("nav-automations")).toContainText("7");
 
   await card.getByTestId("card-open-auto").click();

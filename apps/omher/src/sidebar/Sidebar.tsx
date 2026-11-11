@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import "./sidebar.css";
-import logo from "../assets/awaken-orb.svg";
+import churchLogo from "../assets/awaken-church.webp";
+import { OrbMark } from "../ui/OrbMark";
 import { selectAsks, selectSidebarBots, useStore } from "../state/store";
 import { slots } from "../features";
 import { CalendarIcon, GearIcon, GridIcon, IconButton, PlusIcon, SearchIcon } from "../ui";
@@ -36,8 +37,8 @@ export function Sidebar() {
     <aside className="side" data-testid="sidebar">
       <div className="side-top">
         <div className="brand">
-          <img src={logo} alt="" />
-          <b>AWAKEN BOT</b>
+          <OrbMark />
+          <img className="church-wordmark" src={churchLogo} alt="Awaken Church" width={124} height={13} />
         </div>
         <div className="side-add">
           <IconButton label={t("nav.addBot")} onClick={() => AddBot && setAdding((v) => !v)} aria-expanded={adding} disabled={!AddBot}>

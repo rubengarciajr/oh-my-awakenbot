@@ -6,7 +6,7 @@
 // fixed command (OMH's one-line installer with `omher@beta`, without the app); the page only presses the
 // button and shows the output.
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import mark from "../assets/awaken-orb.svg";
+import { OrbMark } from "../ui/OrbMark";
 import "./gate.css";
 import { t } from "../i18n";
 
@@ -166,7 +166,7 @@ export function BridgeGate({ children }: { children: ReactNode }) {
     return (
       <div className="gate" data-testid="bridge-gate" data-state="setup">
         <div className="gate-box gate-setup" data-testid="setup-screen">
-          <img className="gate-mark" src={mark} alt="" width={44} height={44} />
+          <OrbMark className="gate-mark" />
           <div className="gate-head" data-testid="setup-head">
             {install === "failed" ? t("gate.failedHead") : t("gate.head")}
           </div>

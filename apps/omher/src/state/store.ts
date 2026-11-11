@@ -372,7 +372,7 @@ export function readTheme(): Theme {
   } catch {
     /* no storage */
   }
-  return "system";
+  return "dark";
 }
 
 export function initialState(): AppState {

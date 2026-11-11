@@ -84,7 +84,7 @@ test("the user row opens Accounts: one plain header line, CLIs on this computer 
   await expect(page.getByTestId("settings-nav-accounts")).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".st-nav button").first()).toHaveText("Accounts");
   await expect(page.getByTestId("me")).toHaveClass(/\bon\b/);
-  await expect(page.getByTestId("accounts-lead")).toHaveText("Logins AWAKEN BOT uses when it runs Claude Code, Codex or pi for you. Bots are set up under Bots.");
+  await expect(page.getByTestId("accounts-lead")).toHaveText("Logins Awaken Church uses when it runs Claude Code, Codex or pi for you. Bots are set up under Bots.");
   await expect(page.locator(".acc-g")).toHaveCount(3);
   await expect(page.locator(".acc-g .acc-gh b")).toHaveText(["Claude Code", "Codex", "pi"]);
   await expect(page.getByTestId("accounts-missing")).toHaveText("Not on this computer: oh-my-pi, Grok, Gemini CLI.");
@@ -204,7 +204,7 @@ test("+ Add account runs the CLI's own sign-in; when it ends signed in, the row 
   await expect(g.getByTestId("signin-panel")).toHaveCount(0);
   const work = row(page, "claude", "work");
   await expect(work.getByTestId("account-name")).toContainText("work@example.com");
-  await expect(work.getByTestId("account-name")).toContainText("Work · Added in AWAKEN BOT");
+  await expect(work.getByTestId("account-name")).toContainText("Work · Added in Awaken Church");
   await expect(work.getByTestId("account-plan")).toHaveText("Pro");
   await expect(work.getByTestId("account-pill")).toHaveCount(0); // signed in, not in use
   expect(await callsOf("accounts.discard")).toEqual([]);
@@ -256,7 +256,7 @@ test("remove asks first; cancel keeps the row, confirm deletes only that account
   const g = page.getByTestId("accounts-codex");
   await row(page, "codex", "work").getByTestId("account-menu").click();
   await page.getByRole("button", { name: "Remove…" }).click();
-  await expect(g.getByTestId("remove-confirm")).toContainText("Remove Work from AWAKEN BOT?");
+  await expect(g.getByTestId("remove-confirm")).toContainText("Remove Work from Awaken Church?");
   await g.getByTestId("remove-confirm").getByRole("button", { name: "Cancel" }).click();
   await expect(g.getByTestId("account-row")).toHaveCount(2);
   expect(await callsOf("accounts.remove")).toEqual([]);

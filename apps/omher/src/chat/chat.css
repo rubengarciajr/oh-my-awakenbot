@@ -592,7 +592,7 @@
   height: 30px;
   border-radius: var(--r);
   background: var(--g-accent);
-  color: #fff;
+  color: var(--on-accent);
   display: grid;
   place-items: center;
   flex: none;

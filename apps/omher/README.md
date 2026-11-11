@@ -1,5 +1,7 @@
 # AWAKEN BOT
 
+The in-app identity is **Awaken Church**, with the official white church wordmark and a slow, twenty-second morphing orb in the corner. The installed application is **AWAKEN BOT**.
+
 AWAKEN BOT is a desktop workspace for your Hermes bots and coding sessions, for macOS and Windows.
 It is a branded fork of [oh-my-hermes](https://github.com/rlaope/oh-my-hermes).
 The source stays under `apps/omher/` so upstream changes remain practical to merge.
@@ -28,7 +30,7 @@ chooses Charcoal or Quiet studio, with equal probability, and keeps that backgro
 The outer orb stays circular; liquid currents, dot texture and a pulsing glow move inside it.
 Reduced motion uses a still image. After five seconds, setup, the workspace or a connection error appears.
 
-Dark mode uses off-black surfaces and off-white text, with ice-blue brand accents. Light mode and the
+Dark mode uses off-black surfaces and off-white text, with warm off-white brand accents. Light mode and the
 existing optional accent palettes remain available in Settings. The app uses its own application identifier,
 `com.awakenbot.desktop`, so it installs beside upstream omher. Internal protocol names and the existing
 `.omher` session/account folders stay compatible with upstream; they are not renamed or migrated.
@@ -113,3 +115,5 @@ Agent and CLI marks in `src/assets/agents/` are the projects' own marks, unedite
 - OMH: the oh-my-hermes kami mark from this repository.
 
 Each mark belongs to its owner and is used only to name that tool in the app.
+
+New installations default to dark mode, even on a light operating system. Explicit saved theme choices are respected. The default palette uses off-black surfaces and warm off-white accents; optional colour palettes remain available. The launch backdrop fills every window size, with a separate circular orb and wordmark. Reduced-motion preferences stop both orb animations.

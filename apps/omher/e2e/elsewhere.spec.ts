@@ -154,7 +154,7 @@ test("Details panel: identity, where the bot is, note, routines", async ({ page 
   const rows = panel.getByTestId("where-row");
   await expect(rows).toHaveCount(4);
   await expect(rows.nth(0)).toContainText("This chat");
-  await expect(rows.nth(0)).toContainText("AWAKEN BOT");
+  await expect(rows.nth(0)).toContainText("Awaken Church");
   await expect(rows.nth(1)).toContainText("gateway 502 on /v1/responses");
   await expect(rows.nth(1)).toContainText("Slack #og-dev");
   await expect(rows.nth(1)).toContainText(/working · \d+m/);

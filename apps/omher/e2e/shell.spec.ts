@@ -52,7 +52,7 @@ test("sidebar lists the mock bots and search filters them", async ({ page }) => 
   await open(page);
   const side = page.getByTestId("sidebar");
   for (const name of ["Kami", "Friren", "Hermes"]) await expect(side.getByText(name, { exact: true })).toBeVisible();
-  await expect(side.getByText("AWAKEN BOT", { exact: true })).toBeVisible();
+  await expect(side.getByRole("img", { name: "Awaken Church" })).toBeVisible();
   for (const nav of ["Settings", "You"]) await expect(side.getByText(nav, { exact: true })).toBeVisible();
   // Automations (with every bot's job count) and Plugins open their pages
   await expect(side.getByTestId("nav-automations")).toHaveText("Automations6");
@@ -83,11 +83,11 @@ test("select Kami shows history as filled bubbles; switching bots swaps the chat
     const cs = getComputedStyle(el);
     return { bg: cs.backgroundColor, border: cs.borderTopWidth, radius: parseFloat(cs.borderTopLeftRadius) };
   });
-  expect(style.bg).toBe("rgb(29, 26, 32)"); // #1d1a20
+  expect(style.bg).toBe("rgb(35, 36, 40)"); // #232428
   expect(style.border).toBe("0px");
   expect(style.radius).toBeLessThanOrEqual(10);
   const me = await tl.getByTestId("bubble-user").first().locator(".b").evaluate((el) => getComputedStyle(el).backgroundColor);
-  expect(me).toBe("rgb(60, 42, 59)"); // #3c2a3b (OMH soft tint)
+  expect(me).toBe("rgb(45, 46, 50)"); // #2d2e32 (OMH soft tint)
   await expect(page.getByTestId("header").getByText("Kami", { exact: true })).toBeVisible();
 });
 

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mkdirSync } from "node:fs";
 
 test("native icon export keeps the bright ice orb instead of flattening it to black", async ({ page }) => {
   await page.goto("/");
@@ -29,12 +30,12 @@ for (const [random, theme] of [[0.1, "charcoal"], [0.9, "quiet-studio"]] as cons
     await page.goto("/");
     const splash = page.getByTestId("launch-screen");
     await expect(splash).toHaveAttribute("data-background", theme);
-    await expect(splash.getByRole("img")).toHaveAttribute("src", /splash-.*\.svg$/);
+    await expect(splash.locator("img")).toHaveAttribute("src", /splash-.*\.svg$/);
     await page.clock.fastForward(4999);
     await expect(splash).toBeVisible();
     await page.clock.fastForward(1);
     await expect(splash).toHaveCount(0);
-    await expect(page.getByTestId("sidebar")).toContainText("AWAKEN BOT");
+    await expect(page.getByTestId("sidebar").getByRole("img", { name: "Awaken Church" })).toBeVisible();
     await expect(page).toHaveTitle("AWAKEN BOT");
   });
 }
@@ -42,10 +43,48 @@ for (const [random, theme] of [[0.1, "charcoal"], [0.9, "quiet-studio"]] as cons
 test("dark mode uses the AWAKEN off-black and off-white palette", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await page.goto("/");
-  await expect(page.getByTestId("sidebar")).toContainText("AWAKEN BOT");
+  await expect(page.getByTestId("sidebar").getByRole("img", { name: "Awaken Church" })).toBeVisible();
   const colors = await page.locator("html").evaluate((el) => {
     const css = getComputedStyle(el);
     return ["--bg", "--side", "--ink", "--body"].map((name) => css.getPropertyValue(name).trim());
   });
   expect(colors).toEqual(["#111214", "#17181b", "#f3f1ec", "#d8d6d0"]);
+});
+
+test("a fresh install stays dark on a light OS and keeps pale chips readable", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByTestId("nav-settings").click();
+  await expect(page.locator(".ap-pv-chip")).toHaveCSS("color", "rgb(12, 12, 14)");
+  await expect(page.locator(".ap-pv-send")).toHaveCSS("color", "rgb(12, 12, 14)");
+});
+
+test("launch fills a tall window without stretching the circular orb", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1100 });
+  await page.clock.install();
+  await page.addInitScript(() => Object.assign(window, { __AWAKEN_SPLASH__: true }));
+  await page.goto("/");
+  const splash = page.getByTestId("launch-screen");
+  await expect(splash).toBeVisible();
+  const frame = await splash.boundingBox();
+  expect(frame).toMatchObject({ x: 0, y: 0, width: 900, height: 1100 });
+  const orb = await splash.locator(".launch-orb").boundingBox();
+  expect(orb).not.toBeNull();
+  expect(orb!.width).toBeCloseTo(orb!.height, 0);
+  await expect(splash.getByText("AWAKEN BOT")).toBeVisible();
+  mkdirSync("e2e/__shots__", { recursive: true });
+  await page.screenshot({ path: "e2e/__shots__/awaken-launch-tall.png" });
+});
+
+test("corner uses the church wordmark and a slower morphing orb", async ({ page, request }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("sidebar").getByRole("img", { name: "Awaken Church" })).toBeVisible();
+  await expect(page.locator(".brand .orb-mark img")).toHaveAttribute("src", "/brand/orb-slow.svg");
+  const orb = await request.get("/brand/orb-slow.svg");
+  const svg = await orb.text();
+  expect(svg).toContain('dur="20s"');
+  expect(svg).not.toContain('dur="5s"');
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect.poll(() => page.locator(".brand .orb-mark img").evaluate((img) => (img as HTMLImageElement).currentSrc)).toContain("orb-slow-still.svg");
 });

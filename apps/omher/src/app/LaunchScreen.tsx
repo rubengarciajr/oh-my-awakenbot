@@ -32,10 +32,12 @@ export function LaunchScreen({ children }: { children: ReactNode }) {
         <div className="launch-screen" data-background={background} data-testid="launch-screen">
           <img
             src={`/brand/splash-${background}${reducedMotion ? "-still" : ""}.svg`}
-            alt="AWAKEN BOT"
-            width={1280}
-            height={800}
+            alt=""
+            className="launch-orb"
+            width={576}
+            height={576}
           />
+          <div className="launch-wordmark">AWAKEN BOT</div>
         </div>
       )}
     </>
