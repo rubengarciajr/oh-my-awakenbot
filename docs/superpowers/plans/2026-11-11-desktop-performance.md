@@ -32,11 +32,11 @@
 
 **Interfaces:** Native `session.transcript`; app `chat.history` bound to the opened main chat; `ChatOpenResult.history` identifies mode and cursor. Opaque native cursors are never constructed by the UI.
 
-- [ ] Add failing tests for bounded opening, legacy compatibility, complete lineage, overlapping pages, cursor reset and stale responses.
-- [ ] Implement metadata resume, paged display normalization and authenticated older-page reads.
-- [ ] Implement upward-scroll loading with viewport preservation and accessible loading/retry state.
-- [ ] Verify fixture completeness and read-only live transfer/latency against the same existing conversation.
-- [ ] Review and commit the complete history change with observed evidence.
+- [x] Add failing tests for bounded opening, legacy compatibility, complete lineage, overlapping pages, cursor reset and stale responses.
+- [x] Implement metadata resume, paged display normalization and authenticated older-page reads.
+- [x] Implement upward-scroll loading with viewport preservation and accessible loading/retry state.
+- [x] Verify fixture completeness and read-only live transfer/latency against the same existing conversation.
+- [x] Review and commit the complete history change with observed evidence.
 
 ## Task 2: Independent session readiness
 
@@ -44,11 +44,11 @@
 
 **Interfaces:** Hermes discovery/ensure readiness selector defaults to global gateway readiness; desktop explicitly requests session readiness when supported. The additional readiness claim carries authenticated local-session capabilities only.
 
-- [ ] Add failing blocked-adapter tests for one, two and many profiles, plus absent Telegram, policy refusal, listener failure and drain.
-- [ ] Implement preflight/local recovery before session publication; retain the global platform startup contract.
-- [ ] Implement capability-aware desktop attachment without restarting a still-starting owner.
-- [ ] Review lifecycle and identity checks, run canonical backend tests, then commit the separate engine repair.
-- [ ] Apply reviewed backend changes through Git and perform one guarded idle cold-start measurement after integration.
+- [x] Add failing blocked-adapter tests for one, two and many profiles, plus absent Telegram, policy refusal, listener failure and drain.
+- [x] Implement preflight/local recovery before session publication; retain the global platform startup contract.
+- [x] Implement capability-aware desktop attachment without restarting a still-starting owner.
+- [x] Review lifecycle and identity checks, run canonical backend tests, then commit the separate engine repair.
+- [x] Apply reviewed backend changes through Git and perform one guarded idle cold-start measurement after integration.
 
 ## Task 3: Hidden visual work
 
@@ -56,10 +56,10 @@
 
 **Interfaces:** A shared visual-active boolean combines document/native visibility; it never gates bridge/store subscriptions.
 
-- [ ] Record comparable synthetic baseline measurements before visual pausing.
-- [ ] Add failing lifecycle tests for hidden intervals, still assets, restore refresh and live events while hidden.
-- [ ] Implement native visibility publication, static hidden assets, paused CSS and display-only timer cleanup.
-- [ ] Verify visible appearance, reduced motion, daily intro and measured hidden work, then review and commit.
+- [x] Record comparable synthetic baseline measurements before visual pausing.
+- [x] Add failing lifecycle tests for hidden intervals, still assets, restore refresh and live events while hidden.
+- [x] Implement native visibility publication, static hidden assets, paused CSS and display-only timer cleanup.
+- [x] Verify visible appearance, reduced motion, daily intro and measured hidden work, then review and commit.
 
 ## Task 4: Reply timing
 
@@ -67,17 +67,17 @@
 
 **Interfaces:** Sanitized recent timing snapshots; canonical admission correlation; finite durations and explicit unknown fields. Retain no content and upload nothing.
 
-- [ ] Add failing deterministic tests for acknowledgements, pre-ack events, queued/unrelated turns, overlapping tools, errors, disconnects and bounded storage.
-- [ ] Measure bridge preparation/submission, first progress/text and tool wall time; add provider-request observation without changing routing.
-- [ ] Expose read-only local measurements with honest field labels and unavailable states.
-- [ ] Verify real selected-model timing without resetting the existing conversation; review and commit.
+- [x] Add failing deterministic tests for acknowledgements, pre-ack events, queued/unrelated turns, overlapping tools, errors, disconnects and bounded storage.
+- [x] Measure bridge preparation/submission, first progress/text and tool wall time; add provider-request observation without changing routing.
+- [x] Expose read-only local measurements with honest field labels and unavailable states.
+- [x] Verify real selected-model timing without resetting the existing conversation; review and commit.
 
 ## Task 5: Integrated delivery
 
-- [ ] Review all changes against the spec and resolve findings.
+- [x] Review all changes against the spec and resolve findings.
 - [ ] Run appropriate complete desktop checks and backend lifecycle/history/observation checks.
 - [ ] Build all three desktop targets, verify updater signatures/checksums and record source revisions.
-- [ ] Back up and install the latest Mac build, verify paging/visibility/recovery and preserve the user's draft.
+- [x] Back up and install the latest Mac build, verify paging/visibility/recovery and preserve the user's draft.
 - [ ] Update draft PR and local evidence; complete the requirement-by-requirement audit before marking the goal complete.
 
 ## Task 6: Personal Linux build (user-added scope)
@@ -93,11 +93,21 @@ The user requested a one-off Linux build for personal use. Build the current ins
 
 The user requested a centered 300×300 rotating orb with small Loading text and one/two/three blinking dots, over a blurred and dimmed whole application. Show it during an initial selected bot connection, including recoverable startup waits. Clear it when the conversation opens or an actionable permanent error arrives. Preserve an already loaded conversation, available navigation/window controls, reduced motion and hidden-window visual pausing.
 
-- [ ] Implement the loading state predicate and foreground overlay using the existing brand orb.
-- [ ] Verify centering, dimensions, full-window blur, animated dots/orb, loaded/error transitions, reduced motion and navigation.
+- [x] Implement the loading state predicate and foreground overlay using the existing brand orb.
+- [x] Verify centering, dimensions, full-window blur, animated dots/orb, loaded/error transitions, reduced motion and navigation.
 - [ ] Include it in the reviewed, rebuilt Mac and Windows delivery.
 
 ## Task 8: Desktop installer ZIP (user-added scope)
 
-- [ ] After final verification, ZIP the latest Apple Silicon Mac DMG and put the ZIP on the user's Desktop. Preserve any pre-existing file with the chosen name.
-- [ ] Verify the ZIP contains the final DMG bytes and provide the absolute file link.
+- [x] After final verification, ZIP the latest Apple Silicon Mac DMG and put the ZIP on the user's Desktop. Preserve any pre-existing file with the chosen name.
+- [x] Verify the ZIP contains the final DMG bytes and provide the absolute file link.
+
+## Observed delivery status
+
+Runtime source: `0acf422379918d5ae22ccd2c9502c22fef0cb783`. Separate operator Hermes source: `1b5c685509c98b407e3364dfa562097ed593daa2`. Both Mac targets were rebuilt, DMGs and updater signatures verified, and the clean Apple Silicon app installed. Strict resource verification passed after launch and native hide/reopen; no Python bundle cache was created. The Desktop ZIP contains the verified Apple Silicon DMG and passed CRC and payload SHA-256 checks.
+
+Observed checks: UI unit 531 passed; bridge 211 passed/1 skipped; boundary 47 passed; final Rust 165 passed/6 ignored; combined backend 161 passed/1 skipped plus all 15 quality checks. Two complete browser runs each exposed one redundant-scroll detachment during synthetic startup DOM replacement; link tests were corrected without changing assertions and passed all 90 cases across ten repeated runs. The full browser rerun remains in progress. These earlier failures must not be reported as a green full suite.
+
+The first personal Linux build (`168091e4`, run `43088688802`) was packaged, smoke-tested, downloaded, checksum-verified and delivered. The refreshed Linux source `da080a30` includes the final runtime, but run `43096663552` failed before producing jobs; the run page reports an unexpected Actions startup error without a specific cause. One rerun has been requested. Refreshed Windows/Mac CI run `43096614608` remains queued. Earlier `e412b354` Windows compilation/installer collection passed; artifact download returned HTTP 502. Final cross-platform artifact verification is still pending; no public release or merge has been performed.
+
+Sanitized native startup, transfer, reply and CPU observations are in `docs/performance/2026-11-11/`. Cold-start measurements separate probe-clock elapsed time from owner process age and distinguish revision maintenance from a same-revision launch. Native owner/bridge CPU samples do not establish a native CPU improvement; the controlled renderer fixture proves the display-work reduction.

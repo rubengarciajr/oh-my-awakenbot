@@ -1,0 +1,184 @@
+{
+  "schema": "awaken_native_resource_measurement/v1",
+  "label": "installed-pre-edc3d33c",
+  "method": {
+    "cpu": "sum of ps cumulative CPU-time deltas divided by monotonic elapsed seconds; one fully busy core = 100 percent",
+    "cpu_time_resolution_seconds": 0.01,
+    "rss": "mean and peak of summed resident KiB across endpoint and 0.5-second samples",
+    "duration_seconds_per_window": 5,
+    "coverage": "fixed installed app PID plus its initial descendants; bridge included; uncorrelated launchd-owned WebKit processes excluded",
+    "ui": "CUA red close hides; authorized open -a restores; AeroSpace read-only window inventory verifies visibility; no chat, settings, or gateway changes"
+  },
+  "app_pid": 30451,
+  "processes": [
+    {
+      "pid": 30451,
+      "ppid": 1,
+      "pgid": 30451,
+      "cpu_seconds": 59.85,
+      "rss_kib": 85664,
+      "name": "awaken-bot"
+    },
+    {
+      "pid": 30456,
+      "ppid": 30451,
+      "pgid": 30451,
+      "cpu_seconds": 3.08,
+      "rss_kib": 22656,
+      "name": "python3"
+    }
+  ],
+  "initial_window_ids": [
+    15771
+  ],
+  "windows": [
+    {
+      "state": "visible",
+      "pair": 1,
+      "elapsed_seconds": 5.067824625,
+      "cpu_seconds": 0.14999999999999147,
+      "cpu_percent_of_one_core": 2.9598498586559017,
+      "rss_mean_kib": 116142.4,
+      "rss_peak_kib": 116384,
+      "tracked_process_count": 2,
+      "group_process_count_min": 2,
+      "group_process_count_max": 2,
+      "window_ids": [
+        15771
+      ],
+      "per_process_cpu_seconds": {
+        "30451": 0.14999999999999858,
+        "30456": 0.0
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 1,
+      "elapsed_seconds": 5.054923604000001,
+      "cpu_seconds": 0.020000000000003126,
+      "cpu_percent_of_one_core": 0.3956538528925931,
+      "rss_mean_kib": 123507.2,
+      "rss_peak_kib": 123872,
+      "tracked_process_count": 2,
+      "group_process_count_min": 2,
+      "group_process_count_max": 2,
+      "window_ids": [],
+      "per_process_cpu_seconds": {
+        "30451": 0.020000000000003126,
+        "30456": 0.0
+      }
+    },
+    {
+      "state": "visible",
+      "pair": 2,
+      "elapsed_seconds": 5.0641329585,
+      "cpu_seconds": 0.18000000000000682,
+      "cpu_percent_of_one_core": 3.554409046426833,
+      "rss_mean_kib": 120550.4,
+      "rss_peak_kib": 120608,
+      "tracked_process_count": 2,
+      "group_process_count_min": 2,
+      "group_process_count_max": 2,
+      "window_ids": [
+        15771
+      ],
+      "per_process_cpu_seconds": {
+        "30451": 0.17999999999999972,
+        "30456": 0.0
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 2,
+      "elapsed_seconds": 5.070293,
+      "cpu_seconds": 0.01999999999999602,
+      "cpu_percent_of_one_core": 0.3944545216616874,
+      "rss_mean_kib": 122841.6,
+      "rss_peak_kib": 123776,
+      "tracked_process_count": 2,
+      "group_process_count_min": 2,
+      "group_process_count_max": 2,
+      "window_ids": [],
+      "per_process_cpu_seconds": {
+        "30451": 0.020000000000003126,
+        "30456": 0.0
+      }
+    },
+    {
+      "state": "visible",
+      "pair": 3,
+      "elapsed_seconds": 5.0816591875,
+      "cpu_seconds": 0.18999999999999773,
+      "cpu_percent_of_one_core": 3.7389362999267006,
+      "rss_mean_kib": 123529.6,
+      "rss_peak_kib": 123856,
+      "tracked_process_count": 2,
+      "group_process_count_min": 2,
+      "group_process_count_max": 2,
+      "window_ids": [
+        15771
+      ],
+      "per_process_cpu_seconds": {
+        "30451": 0.17999999999999972,
+        "30456": 0.010000000000000231
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 3,
+      "elapsed_seconds": 5.071587125000001,
+      "cpu_seconds": 0.009999999999990905,
+      "cpu_percent_of_one_core": 0.1971769340350414,
+      "rss_mean_kib": 123699.2,
+      "rss_peak_kib": 123936,
+      "tracked_process_count": 2,
+      "group_process_count_min": 2,
+      "group_process_count_max": 2,
+      "window_ids": [],
+      "per_process_cpu_seconds": {
+        "30451": 0.00999999999999801,
+        "30456": 0.0
+      }
+    }
+  ],
+  "final_window_ids": [
+    15771
+  ],
+  "same_window_restored": true,
+  "same_app_pid_alive": true,
+  "summary": {
+    "visible": {
+      "window_count": 3,
+      "elapsed_seconds": 15.213616771,
+      "cpu_seconds": 0.519999999999996,
+      "cpu_percent_of_one_core": 3.417990658153118,
+      "rss_mean_kib": 120074.13333333333,
+      "rss_peak_kib": 123856
+    },
+    "hidden": {
+      "window_count": 3,
+      "elapsed_seconds": 15.196803729000003,
+      "cpu_seconds": 0.04999999999999005,
+      "cpu_percent_of_one_core": 0.32901655434672256,
+      "rss_mean_kib": 123349.33333333333,
+      "rss_peak_kib": 123936
+    }
+  },
+  "ui_observation": {
+    "same_empty_composer_observed_after_each_restore": true,
+    "final_window_visible": true,
+    "completion_summary_sent": true
+  },
+  "active_work_checks": {
+    "before": {
+      "answered": true,
+      "active_agents": 0,
+      "active_units": 0
+    },
+    "after": {
+      "answered": true,
+      "active_agents": 0,
+      "active_units": 0
+    }
+  }
+}

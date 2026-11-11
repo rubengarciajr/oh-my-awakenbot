@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "storage": "memory",
+  "limit": 30,
+  "recent": [
+    {
+      "bridge_prepare_ms": 2782,
+      "submit_ack_ms": 3903,
+      "turn_start_ms": 3973,
+      "first_progress_ms": 12218,
+      "first_text_ms": 38397,
+      "total_ms": 44279,
+      "status": "done",
+      "tools_ms": 0,
+      "provider_ms": 26705.08483296726,
+      "provider_first_chunk_ms": 25610.410928726196,
+      "provider_calls": 1
+    }
+  ],
+  "schema": "awaken_observed_reply/v1",
+  "source_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+  "model_selection": "Preserved the already-selected model/provider/reasoning in the existing conversation",
+  "renderer_first_reply_received_ms": 38410,
+  "renderer_acknowledgement_ms": 3910,
+  "notes": [
+    "One authorized local no-tool diagnostic turn; not a population latency estimate",
+    "Durations overlap; do not add provider and bridge elapsed intervals",
+    "Original conversation and draft preserved; no tools or profiles disabled"
+  ]
+}
