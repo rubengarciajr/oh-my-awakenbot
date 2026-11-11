@@ -1,6 +1,6 @@
 # AWAKEN BOT
 
-The in-app identity is **Awaken Church**, with the official white church wordmark and a slow, twenty-second morphing orb in the corner. The installed application is **AWAKEN BOT**.
+The in-app identity is **Awaken Church**, with the official white church wordmark and a slow, twenty-second morphing orb in the corner. The installed application is **Awaken Bot**.
 
 AWAKEN BOT is a desktop workspace for your Hermes bots and coding sessions, for macOS and Windows.
 It is a branded fork of [oh-my-hermes](https://github.com/rlaope/oh-my-hermes).
@@ -15,7 +15,7 @@ Builds under the Actions **AWAKEN BOT installers** workflow are test artifacts, 
 - **Mac, Intel:** `awaken-bot-<version>-macos-x64.dmg`.
 - **Windows 10/11, x64:** `awaken-bot-<version>-windows-x64-setup.exe` or `.msi`.
 
-Drag **AWAKEN BOT** into Applications on Mac, or run the Windows installer.
+Drag **Awaken Bot** into Applications on Mac, or run the Windows installer.
 The current Mac builds are ad-hoc signed, not Apple notarized; Windows installers are not OS code-signed.
 OS code signing is separate from the cryptographic signatures used by the in-app updater.
 

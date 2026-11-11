@@ -88,7 +88,7 @@ jobs:
       - name: Check the bridge ships inside the macOS .app
         if: runner.os == 'macOS'
         working-directory: apps/omher/src-tauri/target/debug/bundle/macos
-        run: test -f "AWAKEN BOT.app/Contents/Resources/bridge/omher_bridge.py"
+        run: test -f "Awaken Bot.app/Contents/Resources/bridge/omher_bridge.py"
       - name: Check the Windows build carries the bridge and an installer
         if: runner.os == 'Windows'
         working-directory: apps/omher/src-tauri/target/debug

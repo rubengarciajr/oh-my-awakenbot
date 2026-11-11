@@ -36,7 +36,7 @@ for (const [random, theme] of [[0.1, "charcoal"], [0.9, "quiet-studio"]] as cons
     await page.clock.fastForward(1);
     await expect(splash).toHaveCount(0);
     await expect(page.getByTestId("sidebar").getByRole("img", { name: "Awaken Church" })).toBeVisible();
-    await expect(page).toHaveTitle("AWAKEN BOT");
+    await expect(page).toHaveTitle("Awaken Bot");
   });
 }
 

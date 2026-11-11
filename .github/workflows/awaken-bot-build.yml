@@ -69,7 +69,7 @@ jobs:
         run: |
           pnpm typecheck
           node scripts/brand-assets.mjs --check
-          node --test scripts/release-manifest.test.mjs
+          node --test scripts/brand-assets.test.mjs scripts/release-manifest.test.mjs
       - name: Unit tests
         if: matrix.label == 'macos-arm64'
         run: pnpm test
@@ -101,8 +101,8 @@ jobs:
           b="src-tauri/target/${{ matrix.target }}/release/bundle"
           if [ "${{ runner.os }}" = macOS ]; then
             cp "$b"/dmg/*.dmg "$out/awaken-bot-$v-${{ matrix.label }}.dmg"
-            test -f "$b/macos/AWAKEN BOT.app/Contents/Resources/bridge/omher_bridge.py"
-            codesign --verify --deep --strict "$b/macos/AWAKEN BOT.app"
+            test -f "$b/macos/Awaken Bot.app/Contents/Resources/bridge/omher_bridge.py"
+            codesign --verify --deep --strict "$b/macos/Awaken Bot.app"
             for f in "$b"/macos/*.app.tar.gz; do
               [ -f "$f" ] || continue
               cp "$f" "$out/awaken-bot-$v-${{ matrix.label }}.app.tar.gz"

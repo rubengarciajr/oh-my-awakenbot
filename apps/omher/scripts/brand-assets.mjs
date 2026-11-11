@@ -3,10 +3,13 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 const check = process.argv.includes("--check");
 const copy = (source, destination, transform) => {
   const raw = readFileSync(new URL(source, import.meta.url));
-  const expected = transform ? Buffer.from(transform(raw.toString("utf8"))) : raw;
+  const normalize = (text) => text.replace(/\r\n/g, "\n");
+  const expected = transform ? Buffer.from(transform(normalize(raw.toString("utf8")))) : raw;
   const path = new URL(destination, import.meta.url);
   if (check) {
-    if (!readFileSync(path).equals(expected)) throw new Error(`Stale brand asset: ${path.pathname}`);
+    const actual = readFileSync(path);
+    const comparable = transform ? Buffer.from(normalize(actual.toString("utf8"))) : actual;
+    if (!comparable.equals(expected)) throw new Error(`Stale brand asset: ${path.pathname}`);
   } else writeFileSync(path, expected);
 };
 const still = (svg) => svg.replace(/<animate(?:Transform)?\b[^>]*?\/>/g, "");

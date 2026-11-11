@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AWAKEN BOT",
+  "productName": "Awaken Bot",
   "version": "0.1.0",
   "identifier": "com.awakenbot.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "AWAKEN BOT",
+        "title": "Awaken Bot",
         "width": 1280,
         "height": 820,
         "minWidth": 900,
