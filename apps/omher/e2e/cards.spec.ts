@@ -2,6 +2,7 @@
 // collapse to one gray line.
 import { expect, test, type Page } from "@playwright/test";
 import { join } from "node:path";
+import { chooseTheme } from "./helpers/appearance";
 
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
 // Screenshots stay out of the repo (CARDS_SHOTS dir, else Playwright's ignored test-results).
@@ -187,10 +188,7 @@ test("a card left open when the turn is stopped collapses to one line", async ({
 
 test("light theme: card stays neutral", async ({ page }) => {
   await open(page);
-  await page.evaluate(async () => {
-    const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-    m.getStore().actions.setTheme("light");
-  });
+  await chooseTheme(page, "light");
   await send(page, "/approve");
   const card = page.getByTestId("card-approval");
   await expect(card).toBeVisible();

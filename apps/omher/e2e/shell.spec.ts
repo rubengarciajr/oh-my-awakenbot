@@ -52,7 +52,8 @@ test("sidebar lists the mock bots and search filters them", async ({ page }) => 
   await expect(side.getByTestId("nav-automations")).toHaveText("Automations6");
   await expect(side.getByTestId("nav-plugins")).toHaveText("Plugins");
   for (const id of ["nav-automations", "nav-plugins"]) await expect(side.getByTestId(id)).toBeEnabled();
-  // Kami starts running in the mock -> live ring around its face
+  // Observe a running turn rather than relying on the seed's stale running flag.
+  await mock("mock.emit", { events: [{ event: "turn.start", bot: "kami" }] });
   await expect(page.getByTestId("bot-kami").getByTestId("live-ring")).toBeVisible();
   await page.getByLabel("Search bots").fill("fri");
   await expect(page.getByTestId("bot-friren")).toBeVisible();

@@ -177,14 +177,14 @@ describe("selected bot startup and reconnect", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a semantic refusal cancels a previous startup retry", async () => {
+  it.each(["unknown_bot", "gateway_unavailable"])("a semantic %s refusal cancels a previous startup retry", async (code) => {
     vi.useFakeTimers();
     const f = fixture();
     f.errors.set("first", "gateway_starting");
     const store = createStore(f.bridge);
     await store.actions.init();
     expect(vi.getTimerCount()).toBe(1);
-    f.errors.set("first", "unknown_bot");
+    f.errors.set("first", code);
     await store.actions.selectBot("first");
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(30000);
