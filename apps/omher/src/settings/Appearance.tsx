@@ -12,7 +12,7 @@ const PALETTE_NAME: Record<Exclude<Palette, "omh">, Key> = {
   sunset: "look.sunset",
   rose: "look.rose",
 };
-const paletteName = (p: Palette) => (p === "omh" ? "OMH" : t(PALETTE_NAME[p]));
+const paletteName = (p: Palette) => (p === "omh" ? "AWAKEN BOT" : t(PALETTE_NAME[p]));
 const BUBBLE_NAME: Record<BubbleStyle, Key> = { soft: "look.soft", solid: "look.solid", open: "look.open" };
 const BUBBLE_HINT: Record<BubbleStyle, Key> = { soft: "look.softHint", solid: "look.solidHint", open: "look.openHint" };
 const THEMES: { value: Theme; label: Key }[] = [

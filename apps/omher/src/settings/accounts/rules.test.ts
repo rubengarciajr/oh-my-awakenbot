@@ -40,13 +40,13 @@ describe("row names", () => {
   it("says where the login lives under it", () => {
     expect(rowSub(acc("default", "active", { email: "a@b.c", label: "Personal" }))).toBe("Personal · This computer");
     expect(rowSub(acc("default", "active"))).toBe("");
-    expect(rowSub(acc("work", "ready", { label: "Work" }))).toBe("Added in omher");
+    expect(rowSub(acc("work", "ready", { label: "Work" }))).toBe("Added in AWAKEN BOT");
     expect(rowSub({ ...acc("default", "active"), method: "chatgpt" })).toBe("ChatGPT login");
     expect(rowSub({ ...acc("default", "active", { email: "a@b.c" }), method: "claude.ai" })).toBe("This computer");
   });
   it("reads source · plan, the same for every CLI", () => {
     expect(rowSub({ ...acc("default", "active", { email: "a@b.c" }), plan: "Max 20x" })).toBe("This computer · Max 20x");
-    expect(rowSub({ ...acc("work", "ready", { email: "w@b.c" }), plan: "Pro" })).toBe("Added in omher · Pro");
+    expect(rowSub({ ...acc("work", "ready", { email: "w@b.c" }), plan: "Pro" })).toBe("Added in AWAKEN BOT · Pro");
     expect(rowSub({ ...acc("default", "active"), method: "chatgpt", plan: "Plus" })).toBe("ChatGPT login · Plus");
     expect(rowSub({ ...acc("default", "active", { label: "Personal" }), plan: "" })).toBe("Personal");
   });

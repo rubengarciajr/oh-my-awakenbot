@@ -1,151 +1,102 @@
-# omher
+# AWAKEN BOT
 
-omher is a desktop app for your Hermes bots, on macOS, Windows and Linux. Each Hermes profile is one bot. Each bot has one main
-chat, and the app shows what that bot is doing in its other sessions (Slack, Discord, Telegram, cron)
-read-only. Under the bots, SESSIONS starts a terminal agent (Claude Code, Codex, oh-my-hermes, pi, oh-my-pi) in a
-folder you pick and runs it inside the window, as if you had typed `claude` or `codex` in a terminal. It is part of
-this repository but is not part of the `omh` Python package.
-
-Boundary: [`docs/OMHER-BOUNDARY.md`](../../docs/OMHER-BOUNDARY.md).
+AWAKEN BOT is a desktop workspace for your Hermes bots and coding sessions, for macOS and Windows.
+It is a branded fork of [oh-my-hermes](https://github.com/rlaope/oh-my-hermes).
+The source stays under `apps/omher/` so upstream changes remain practical to merge.
 
 ## Install
 
-**One command (beta).** It installs Hermes Agent and oh-my-hermes if they are missing, then omher
-(macOS, Windows and Linux x86_64). Download buttons are on [omher.app](https://omher.app/).
+Download installers from [AWAKEN BOT releases](https://github.com/rubengarciajr/oh-my-awakenbot/releases).
+Builds under the Actions **AWAKEN BOT installers** workflow are test artifacts, not published releases.
+
+- **Mac, Apple Silicon:** `awaken-bot-<version>-macos-arm64.dmg`.
+- **Mac, Intel:** `awaken-bot-<version>-macos-x64.dmg`.
+- **Windows 10/11, x64:** `awaken-bot-<version>-windows-x64-setup.exe` or `.msi`.
+
+Drag **AWAKEN BOT** into Applications on Mac, or run the Windows installer.
+The current Mac builds are ad-hoc signed, not Apple notarized; Windows installers are not OS code-signed.
+OS code signing is separate from the cryptographic signatures used by the in-app updater.
+
+If Hermes is missing, first launch offers **Install**. It installs Hermes Agent and oh-my-hermes using
+the upstream installer, then connects to your local bots. Model providers and coding tools still use your
+own accounts. The app never takes over or patches Hermes.
+
+## Branding and launch
+
+The launch screen lasts five seconds while the bridge starts in the background. Each launch independently
+chooses Charcoal or Quiet studio, with equal probability, and keeps that background throughout the launch.
+The outer orb stays circular; liquid currents, dot texture and a pulsing glow move inside it.
+Reduced motion uses a still image. After five seconds, setup, the workspace or a connection error appears.
+
+Dark mode uses off-black surfaces and off-white text, with ice-blue brand accents. Light mode and the
+existing optional accent palettes remain available in Settings. The app uses its own application identifier,
+`com.awakenbot.desktop`, so it installs beside upstream omher. Internal protocol names and the existing
+`.omher` session/account folders stay compatible with upstream; they are not renamed or migrated.
+
+The approved vector masters are in `brand/`; app assets are generated with:
 
 ```sh
-curl -fsSL https://omher.app/omher | sh
-# same as: curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh -s -- omher@beta
+node scripts/brand-assets.mjs
+pnpm tauri icon ../../brand/app-icon.svg --output /tmp/awaken-icons
+# Copy the desktop PNG, ICO and ICNS outputs into src-tauri/icons/; mobile outputs are not shipped.
 ```
 
-```powershell
-irm https://omher.app/omher.ps1 | iex
-# same as: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1))) omher@beta
-```
+## Develop and verify
 
-The installer copies omher into `/Applications` (or `~/Applications`) on macOS, runs the Windows installer
-silently for your user, and on Linux puts the AppImage at `~/.local/bin/omher` with an app menu entry. `OMH_WITH_HERMES=0` skips installing Hermes; `OMH_WITH_DESKTOP=0` skips the app.
-Without `omher@beta` the one-liner installs only the `omh` command, as before.
-
-![The omher desktop app in dark mode: a bot list on the left, and a chat with the bot Kami that reports a nightly digest from Discord, picks up a Slack thread about 502 errors, runs four steps and answers with the fix](../../assets/omher-in-use-dark.webp)
-
-**If you install the app first**, it checks for Hermes on its first launch. When Hermes is missing it shows
-"omher needs Hermes and oh-my-hermes" with an **Install** button that runs the same one-liner without the app
-(`OMH_WITH_DESKTOP=0`), shows the output, and opens your bots when it finishes. omher needs Hermes only; OMH comes
-along because the installer sets both up. This is the only program omher runs besides its bridge
-([boundary rule 12](../../docs/OMHER-BOUNDARY.md)).
-
-### Download
-
-omher is open source and ships as plain installers on the
-[GitHub Releases page](https://github.com/rlaope/oh-my-hermes/releases?q=omher&expanded=true) (tags `omher-v*`).
-There is no App Store build. It runs on [Hermes Agent](https://github.com/NousResearch/hermes-agent) on the same
-machine and finds Hermes' Python on its own (see "Where omher looks for Hermes" below); when it finds none, the
-first launch offers to install it, as described above.
-
-**macOS (11 or later).** Download `omher-<version>-macos-arm64.dmg` (Apple Silicon) or `-macos-x64.dmg` (Intel),
-open it and drag omher into Applications. The app is ad-hoc signed, not notarized, so the first launch needs
-one extra step: right-click omher in Applications, choose **Open**, then **Open** again. After that it opens
-normally. If macOS still says the app "is damaged", clear the download flag once:
+Requires Node 22, pnpm 11, Rust and the platform's Tauri prerequisites. From this directory:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/omher.app
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+node scripts/brand-assets.mjs --check
+node --test scripts/release-manifest.test.mjs
+pnpm exec playwright install chromium
+pnpm e2e
+(cd src-tauri && cargo test --locked)
+python -m unittest discover -s bridge/tests -v
+pnpm tauri dev
 ```
 
-**Windows 10/11 (x64).** Download `omher-<version>-windows-x64-setup.exe` (installs for your user, no admin) or
-the `.msi`. The installer is not code-signed, so SmartScreen may say "Windows protected your PC": choose
-**More info**, then **Run anyway**. The installer fetches Microsoft's WebView2 runtime if it is missing.
+The bridge tests need `websockets` and PyYAML; they use a fake gateway rather than your real bots.
+For browser development, use `node e2e/mock-bridge.mjs --port 5308` and
+`VITE_OMHER_BRIDGE=ws://127.0.0.1:5308/?token=dev pnpm dev`.
+The five-second launch is enabled in the desktop shell; browser development opens the workspace directly.
 
-**Linux (x86_64).** Download `omher-<version>-linux-x64.AppImage`, make it executable and run it:
-`chmod +x omher-*.AppImage && ./omher-*.AppImage`. It needs WebKitGTK 4.1 and FUSE 2 (`libfuse2`; Ubuntu 24.04
-calls it `libfuse2t64`), which most desktops already have. A `.deb` is on the same release. The in-app update
-button replaces the AppImage in place; a `.deb` install is updated by installing the next `.deb` by hand.
-Details and troubleshooting: [`docs/omher-linux.md`](../../docs/omher-linux.md).
+## Build and release
 
-Check a download against `SHA256SUMS.txt` on the same release:
-`shasum -a 256 <file>` (macOS), `sha256sum <file>` (Linux) or `certutil -hashfile <file> SHA256` (Windows).
+The **AWAKEN BOT installers** workflow builds Apple Silicon, Intel Mac, and Windows x64 installers.
+Build artifacts do not notify installed users. A Mac can also build a local DMG with `pnpm tauri build --bundles app,dmg`.
 
-### Where omher looks for Hermes
+Set `TAURI_SIGNING_PRIVATE_KEY` in the build environment or repository Actions secrets, using the private
+key whose public half is pinned in `src-tauri/tauri.conf.json`. Keep a protected backup outside the repo.
+Losing this key prevents future updates to already installed copies. Never commit it.
 
-1. `OMHER_HERMES_PYTHON`, if set (any Python that can import Hermes).
-2. `HERMES_HOME/hermes-agent/venv` (then `.venv`), if `HERMES_HOME` is set.
-3. The installer's default home: `~/.hermes/hermes-agent/venv/bin/python` on macOS and Linux,
-   `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe` on Windows.
+For a release, update the matching versions in `package.json`, `src-tauri/Cargo.toml`, and
+`src-tauri/tauri.conf.json`, and `VERSION` in `bridge/omher_bridge.py`; update Cargo.lock and `RELEASE-NOTES.md`. Test and merge, then tag that exact
+commit `awakenbot-v<version>`. The release workflow creates a **draft** with signed update bundles,
+installers and checksums. To publish, run **AWAKEN BOT release** for that tag with **publish** enabled.
+Only that promotion changes `awakenbot-latest/latest.json` and makes installed users see an update.
+Users choose to install and restart; releases already public are not overwritten.
 
-## Architecture
+Apple Developer ID signing/notarization and Windows code signing can be added before a wider launch.
+They are not required to produce these test installers.
 
-```
-UI (React in a Tauri window)  ⇄  bridge (Python, loopback WebSocket)  ⇄  the person's own Hermes gateway
-```
-
-- **UI** (`src/`): talks only to the bridge, through the protocol in `src/lib/protocol.ts`.
-- **Shell** (`src-tauri/`): starts the bridge with Hermes' own Python, reads its `OMHER_BRIDGE_READY` line,
-  hands the UI a `ws://127.0.0.1:<port>/?token=<random>` URL, and stops the bridge when the app exits. If the
-  bridge cannot start, the UI shows the error with a Retry button; if the reason is that Hermes is missing, it
-  shows the first-run Install screen instead (`src-tauri/src/setup.rs` holds its one fixed command).
-- **Bridge** (`bridge/omher_bridge.py`): uses Hermes' `connect_gateway`, one connection per profile. It binds
-  127.0.0.1 only and refuses any connection without the launch token.
-- **Mock bridge** (`e2e/mock-bridge.mjs`): the same protocol, scripted, for the Playwright tests.
-- **Sessions** (`src-tauri/src/sessions.rs`, `src/sessions/`): the SESSIONS `+` opens a menu of the agents found on
-  `PATH` and in the usual install folders (`~/.local/bin`, Homebrew, npm/pnpm/bun globals, `%APPDATA%\npm`): the
-  installed ones first, the last one used on top, the missing ones dimmed with their install line. Picking one
-  opens its New session chat at once; its composer names the agent, and the folder chip under it picks the folder
-  (the last one used, else home; recent folders, Choose folder… or home). Nothing runs until the first message, which
-  becomes the agent's first prompt; a terminal agent starts on Start. The program runs in a pseudo-terminal (`portable-pty`: a Unix PTY on macOS, ConPTY on
-  Windows) drawn with xterm.js. The UI sends only an agent id (`claude`, `codex`, `omo`, `dsh`, `omh`, `pi`, `omp`, `grok`); the shell
-  refuses anything else and never takes a command line or arguments. Closing a session or quitting the app stops
-  the program. In a plain browser (dev, e2e) a mock host echoes what you type instead. A chat session's approvals
-  and questions are asks like a bot's: they join the Needs-you strip and ⌘J (named by folder and agent), and the
-  session row rings while a turn runs and shows the amber dot while it asks. A row's first line is the session's
-  name: the one you gave it (double-click or right-click › Rename), else the title the agent gave the conversation
-  (`session_title_changed` from Claude Code, `thread/name/updated` from Codex, `session.title` from Hermes, or the
-  bridge's `cli.title` read of their own session files), else a summary of your first message made in the UI
-  (`src/sessions/titles.ts`, no model call), else the folder. The second line is the folder and the agent.
-
-Rules the code keeps:
-
-- **Read-only elsewhere.** `chat.send` reaches only the bot's main chat (the session titled `Bot Chat`). Other
-  sessions are listed and their history read, never resumed, answered, interrupted or written to.
-- **Files go the same way.** The composer's + (or a drop, or a paste) stages each file with `chat.attach`, which
-  calls Hermes' own `image.attach_bytes`, `pdf.attach` or `file.attach` in the main chat, then `chat.send` sends the
-  text. 20 files, 100 MB each; if one attach fails, nothing is sent.
-- **Loopback only.** The bridge listens on 127.0.0.1 and talks to the gateway Hermes itself runs on this machine.
-- **No model calls of its own.** Every model call is Hermes'. omher has no API key and no HTTP client.
-- **Sessions run only allow-listed agents.** Only when you start one, only `claude`, `codex`, `omo`, `dsh`, `omh`, `pi`,
-  `omp` or `grok`, with no arguments besides the fixed chat mode and a conversation id to continue, in the folder you
-  picked; stopped when the session is closed or the app quits.
-- **Automations and plugins change only through the bot.** The Automations page reads each profile's
-  `cron/jobs.json` and changes a job only with that bot's `cron.manage` (add, pause, resume, remove); Run now and
-  Edit are chat messages. The Plugins page reads the catalog cache and the profile's plugin folder names and changes
-  a plugin only with the bot's `plugins.manage`; installs are catalog-only, inspected first and confirmed.
-- **Four languages.** English, Korean, Japanese and Chinese (`src/i18n/`), picked in Settings › General › Language.
-
-## Develop
-
-Needs Node, pnpm, Rust, and Hermes Agent installed (found as described above). Works on macOS and Windows; on
-Windows run the commands in Git Bash or PowerShell.
+## Bring in upstream updates
 
 ```sh
-pnpm install
-pnpm dev                  # the UI alone, against VITE_OMHER_BRIDGE or ws://127.0.0.1:5308/?token=dev
-node e2e/mock-bridge.mjs --port 5308   # the mock bridge for that
-pnpm tauri dev            # the app: starts the real bridge from ./bridge
-pnpm typecheck && pnpm test            # tsc, vitest
-pnpm e2e                  # Playwright (chromium) against the mock bridge
-(cd src-tauri && cargo test)           # the shell's Rust tests
-(cd src-tauri && cargo test real_agents_print_their_version -- --ignored --nocapture)  # `claude/codex --version` through the PTY
-python -m unittest discover -s bridge/tests -v   # bridge tests with a FakeGateway; needs no Hermes
-pnpm tauri build --debug --bundles app # a debug .app in src-tauri/target/debug/bundle/macos/
-pnpm tauri build --bundles dmg         # macOS release .dmg (ad-hoc signed)
-pnpm tauri build --bundles nsis,msi    # Windows release installers (unsigned)
+git remote add upstream https://github.com/rlaope/oh-my-hermes.git  # once, if absent
+git fetch upstream
+git switch -c update/upstream-YYYY-MM-DD origin/main
+git merge upstream/main
 ```
 
-## Release
+Resolve changes against the AWAKEN brand assets, launch screen, theme tokens, app identity, updater
+public key/endpoint, and Mac/Windows-only release workflow. Run the app checks and build installers before
+merging. Publish an AWAKEN version only after review; fetching or merging upstream never promotes the
+live update manifest. Upstream's Python package keeps its original name and installation/update lifecycle.
 
-Bump `version` in `src-tauri/tauri.conf.json` (and `src-tauri/Cargo.toml`, `package.json`), merge, then push a
-tag `omher-v<version>`. `.github/workflows/omher-release.yml` builds the macOS (arm64, x64) and Windows (x64)
-installers, writes `SHA256SUMS.txt` and attaches everything to a GitHub Release of that tag. No Apple Developer
-or Windows signing certificate is involved: macOS builds use an ad-hoc signature (`signingIdentity: "-"`).
+The desktop safety contract remains in [OMHER-BOUNDARY.md](../../docs/OMHER-BOUNDARY.md).
 
 ## Credits
 

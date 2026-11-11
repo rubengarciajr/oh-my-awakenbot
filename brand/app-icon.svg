@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><title>AWAKEN BOT app icon</title><rect x="64" y="64" width="896" height="896" rx="196" fill="#0C0C0E"/><g transform="translate(208 208) scale(2.375)"><defs>
+    <!-- Palette: off-black #0C0C0E; white #FAFAFA; ice #CDEEFF -->
+    <radialGradient id="body" cx=".3" cy=".23" r=".85">
+      <stop stop-color="#FAFAFA"/>
+      <stop offset=".24" stop-color="#E5F5FC"/>
+      <stop offset=".54" stop-color="#B1D8EB"/>
+      <stop offset=".76" stop-color="#536B7B"/>
+      <stop offset="1" stop-color="#0C0C0E"/>
+    </radialGradient>
+    <radialGradient id="ice" gradientUnits="userSpaceOnUse" cx="191" cy="111" r="115" gradientTransform="translate(191 111) rotate(-30) scale(1 .7) translate(-191 -111)">
+      <stop stop-color="#DFF6FF"/>
+      <stop offset=".35" stop-color="#B9E8FD" stop-opacity=".88"/>
+      <stop offset="1" stop-color="#A4D9F0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shadow" gradientUnits="userSpaceOnUse" cx="31" cy="171" r="157" gradientTransform="translate(31 171) rotate(39) scale(1 .52) translate(-31 -171)">
+      <stop stop-color="#0C0C0E" stop-opacity=".96"/>
+      <stop offset=".4" stop-color="#1B2630" stop-opacity=".79"/>
+      <stop offset="1" stop-color="#1B2630" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="crown" gradientUnits="userSpaceOnUse" cx="73" cy="38" r="138" gradientTransform="translate(73 38) rotate(-25) scale(1 .55) translate(-73 -38)">
+      <stop stop-color="#FFFFFF" stop-opacity=".95"/>
+      <stop offset=".5" stop-color="#FAFAFA" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#FAFAFA" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="lowerIce" gradientUnits="userSpaceOnUse" cx="123" cy="251" r="112" gradientTransform="translate(123 251) scale(1 .32) translate(-123 -251)">
+      <stop stop-color="#CDEEFF" stop-opacity=".72"/>
+      <stop offset="1" stop-color="#CDEEFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="edge" x1="30" y1="20" x2="226" y2="235" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".68"/>
+      <stop offset=".5" stop-color="#CDEEFF" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity=".28"/>
+    </linearGradient>
+  </defs>
+  <g id="orb">
+    <circle cx="128" cy="128" r="128" fill="url(#body)"/>
+    <circle cx="128" cy="128" r="128" fill="url(#ice)"/>
+    <circle cx="128" cy="128" r="128" fill="url(#shadow)"/>
+    <circle cx="128" cy="128" r="128" fill="url(#crown)"/>
+    <circle cx="128" cy="128" r="128" fill="url(#lowerIce)"/>
+    <circle cx="128" cy="128" r="127.65" stroke="url(#edge)" stroke-width=".7"/>
+  </g>
+</g></svg>

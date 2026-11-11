@@ -8,7 +8,7 @@ import { useStore } from "../state/store";
 import { openExternal } from "../lib/openExternal";
 import { shortTime } from "../app/time";
 import { Avatar, CloseIcon, IconButton, SourceIcon } from "../ui";
-import logo from "../assets/omher-mark.png";
+import logo from "../assets/awaken-orb.svg";
 import { awayTime, cadence, nextRun, sourceList, sourceName } from "./format";
 import { DiffTab, ScheduleTab, TAB_ICON, TABS, TerminalTab, WorktreesTab, type PanelTab } from "./PanelTabs";
 import { useNow } from "./useNow";
@@ -127,7 +127,7 @@ function DetailsTab({ bot, open, head }: { bot: Bot; open: boolean; head: JSXChi
             <span className="t2">
               <span className="ew-src">
                 <img className="ew-logo" src={logo} alt="" />
-                omher
+                AWAKEN BOT
               </span>
             </span>
           </li>

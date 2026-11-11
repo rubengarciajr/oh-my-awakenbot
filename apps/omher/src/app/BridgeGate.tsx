@@ -6,7 +6,7 @@
 // fixed command (OMH's one-line installer with `omher@beta`, without the app); the page only presses the
 // button and shows the output.
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import mark from "../assets/omher-mark.png";
+import mark from "../assets/awaken-orb.svg";
 import "./gate.css";
 import { t } from "../i18n";
 

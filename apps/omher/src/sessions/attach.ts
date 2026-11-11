@@ -16,7 +16,7 @@ export const inlinePicture = (name: string, size: number) => INLINE_EXTS.has(ext
 export function wireText(typed: string, paths: string[]): string {
   const text = typed.trim();
   if (!paths.length) return text;
-  const head = paths.length === 1 ? "Attached file (a copy omher saved; open it with your tools):" : "Attached files (copies omher saved; open them with your tools):";
+  const head = paths.length === 1 ? "Attached file (a copy AWAKEN BOT saved; open it with your tools):" : "Attached files (copies AWAKEN BOT saved; open them with your tools):";
   return [text, [head, ...paths.map((p) => `- ${p}`)].join("\n")].filter(Boolean).join("\n\n");
 }
 

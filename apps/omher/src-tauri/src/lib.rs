@@ -478,7 +478,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building omher");
+        .expect("error while building AWAKEN BOT");
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {

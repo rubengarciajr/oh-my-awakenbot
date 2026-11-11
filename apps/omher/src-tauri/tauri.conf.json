@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "omher",
-  "version": "0.2.4",
-  "identifier": "dev.ohmyhermes.omher",
+  "productName": "AWAKEN BOT",
+  "version": "0.1.0",
+  "identifier": "com.awakenbot.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:5207",
@@ -12,12 +12,13 @@
   "app": {
     "windows": [
       {
-        "title": "omher",
+        "title": "AWAKEN BOT",
         "width": 1280,
         "height": 820,
         "minWidth": 900,
         "minHeight": 600,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "backgroundColor": "#111214"
       }
     ],
     "security": {
@@ -29,7 +30,12 @@
     "resources": {
       "../bridge/omher_bridge.py": "bridge/omher_bridge.py"
     },
-    "targets": "all",
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "msi"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,7 +45,7 @@
       "icons/icon.png"
     ],
     "category": "Productivity",
-    "shortDescription": "Your Hermes bots in one window",
+    "shortDescription": "Your bots. One calm workspace.",
     "copyright": "MIT License, oh-my-hermes contributors",
     "macOS": {
       "signingIdentity": "-",
@@ -57,9 +63,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFGMTRFOUQyNjMxNjQyNDUKUldSRlFoWmowdWtVSDZ1YTQ4VS9VcVZsNm9UcW03MUJKWU8zREw0cWlBTzA3TGw5K0RhdUpYR3gK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDAxNDY3MjVCRDk1Q0I0RDAKUldUUXRGelpXM0pHQVczZ1g2N3UveGl6N0RGQmp3bVdhY1R1cExMVzFXVDFVQkRuOC85UUd5TjcK",
       "endpoints": [
-        "https://github.com/rlaope/oh-my-hermes/releases/download/omher-latest/latest.json"
+        "https://github.com/rubengarciajr/oh-my-awakenbot/releases/download/awakenbot-latest/latest.json"
       ]
     }
   }

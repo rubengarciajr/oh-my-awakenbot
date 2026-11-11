@@ -1,4 +1,4 @@
-name: omher
+name: AWAKEN BOT checks
 
 # omher (apps/omher) on macOS and Windows: UI checks, the Tauri shell's Rust tests and an unsigned debug build
 # per platform, plus the bridge's unit tests against a FakeGateway (no Hermes needed) on Linux and Windows.
@@ -88,11 +88,11 @@ jobs:
       - name: Check the bridge ships inside the macOS .app
         if: runner.os == 'macOS'
         working-directory: apps/omher/src-tauri/target/debug/bundle/macos
-        run: test -f omher.app/Contents/Resources/bridge/omher_bridge.py
+        run: test -f "AWAKEN BOT.app/Contents/Resources/bridge/omher_bridge.py"
       - name: Check the Windows build carries the bridge and an installer
         if: runner.os == 'Windows'
         working-directory: apps/omher/src-tauri/target/debug
         run: |
-          test -f omher.exe
+          test -f awaken-bot.exe
           test -f bridge/omher_bridge.py
           ls bundle/nsis/*.exe

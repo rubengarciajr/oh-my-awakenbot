@@ -119,7 +119,7 @@ RULES = (
 TAURI_CONF = ROOT / "apps" / "omher" / "src-tauri" / "tauri.conf.json"
 CAPABILITIES = ROOT / "apps" / "omher" / "src-tauri" / "capabilities" / "default.json"
 UI_SRC = ROOT / "apps" / "omher" / "src"
-UPDATE_ENDPOINT = "https://github.com/rlaope/oh-my-hermes/releases/download/omher-latest/latest.json"
+UPDATE_ENDPOINT = "https://github.com/rubengarciajr/oh-my-awakenbot/releases/download/awakenbot-latest/latest.json"
 SETUP_RS = ROOT / "apps" / "omher" / "src-tauri" / "src" / "setup.rs"
 SHELL_SRC = ROOT / "apps" / "omher" / "src-tauri" / "src"
 # The shell's fixed run: the documented one-liner, downloaded to a temp file first so a failed download
