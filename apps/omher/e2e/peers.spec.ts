@@ -220,7 +220,7 @@ test("an invalid draft shows a disabled chip with its reason", async ({ page }) 
   await expect(chips).toHaveCount(2);
   await expect(chips.nth(0)).toBeDisabled();
   await expect(chips.nth(0)).toHaveAttribute("data-why", "host");
-  await expect(chips.nth(0)).toContainText("not a host omher can use");
+  await expect(chips.nth(0)).toContainText("not a host Awaken Church can use");
   await expect(chips.nth(1)).toHaveAttribute("data-why", "json");
 });
 

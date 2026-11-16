@@ -183,9 +183,11 @@ async function settledHeader(page: Page) {
     .toBe(true);
 }
 
-test("5. a bot's header keeps the model name whole from 900px up, panel open and closed, in every language", async ({ page }) => {
-  test.setTimeout(240_000);
-  for (const lang of ["en", "ko", "ja", "zh"]) {
+// Each language gets a fresh page and its own init script and saved panel state. Reusing the page kept the
+// previous language's open Plans panel across navigation and accumulated competing language init scripts.
+for (const lang of ["en", "ko", "ja", "zh"]) {
+  test(`5. a bot's header keeps the model name whole from 900px up, panel open and closed (${lang})`, async ({ page }) => {
+    test.setTimeout(60_000);
     await setup(page, "dark", {}, lang);
     await expect(page.getByTestId("places")).toBeVisible();
     const btn = page.getByTestId("panel-button");
@@ -215,8 +217,8 @@ test("5. a bot's header keeps the model name whole from 900px up, panel open and
         if (!open) expect(m.placesLabel, `places words at ${where}`).toBe(true);
       }
     }
-  }
-});
+  });
+}
 
 for (const theme of ["dark", "light"] as const) {
   test(`5. the header at 1100px with Plans open keeps "Opus 5.5" whole, the chip down to its marks (${theme})`, async ({ page }) => {

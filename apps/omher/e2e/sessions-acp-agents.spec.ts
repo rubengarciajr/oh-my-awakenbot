@@ -389,7 +389,7 @@ test("a Kilo Code session saved before this comes back ended: one plain line, it
   await expect(row).toContainText("fix login");
   const ended = page.getByTestId("session-ended");
   await expect(ended).toBeVisible();
-  await expect(ended.getByTestId("session-gone")).toHaveText("Kilo Code is no longer offered in omher");
+  await expect(ended.getByTestId("session-gone")).toHaveText("Kilo Code is no longer offered in Awaken Church");
   await expect(ended.getByTestId("session-restart")).toHaveCount(0);
   await expect(page.getByTestId("session-resume")).toHaveCount(0);
   await expect(page.getByTestId("session-chat")).toContainText("fix the login form");

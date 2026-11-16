@@ -59,7 +59,8 @@ test("fresh start: only the default bot; + lists the others; Add brings Friren i
   await expect(page.getByTestId("addbot-default")).toHaveCount(0);
   await expect(page.getByTestId("addbot-friren")).toContainText("Friren");
   await expect(page.getByTestId("addbot-friren")).toContainText("Sonnet 5.5");
-  await expect(page.getByTestId("addbot-create")).toHaveCount(0);
+  await expect(page.getByTestId("addbot-create")).toBeEnabled();
+  await expect(page.getByTestId("addbot-create")).toHaveText("Create a bot");
   await expect(pop).not.toContainText("Soon");
 
   await page.getByTestId("addbot-friren").getByRole("button", { name: "Add" }).click();
@@ -120,15 +121,23 @@ test("resume saved Kami: Kami alone; Remove from list puts a bot back under +; t
   for (const op of ["chat.send", "chat.set_model", "bots.rename", "bots.set_avatar"]) expect(ops.has(op)).toBe(false);
 });
 
-test("+ with every bot already listed says so in one line, with how Hermes makes another", async ({ page }) => {
+test("+ with every bot already listed says so and opens Create a bot without creating one", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("omher.roster", JSON.stringify(["kami", "friren", "default", "omh-tui"])));
   await page.goto("/");
   await expect(page.getByTestId("bot-kami")).toBeVisible();
   await page.getByRole("button", { name: "Add a bot" }).click();
   const empty = page.getByTestId("addbot-empty");
   await expect(empty).toContainText("Every bot on this computer is already here.");
-  await expect(empty.locator("code")).toHaveText("hermes profile create <name>");
   await expect(page.getByTestId("addbot").locator(".ab-row")).toHaveCount(0);
+  const create = page.getByTestId("addbot-create");
+  await expect(create).toHaveText("Create a bot");
+  await expect(create).toBeEnabled();
+  await create.click();
+  const form = page.getByTestId("createbot-form");
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel("Bot name", { exact: true })).toBeEmpty();
+  await expect(form.getByLabel("Use settings from", { exact: true })).toHaveValue("kami");
+  expect(await calls("bots.create")).toEqual([]);
 });
 
 test("an ask from a bot outside the list shows in Needs you; opening it adds that bot and opens its chat", async ({ page }) => {

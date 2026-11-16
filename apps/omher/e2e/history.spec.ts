@@ -25,7 +25,8 @@ test("opens recent rows, loads older rows upward, and keeps the reading position
           messages: messages.slice(0, 61), next_cursor: null, reset: false } })), 150);
         // Events delivered while the older page loads must stay in the timeline.
         ws.send(JSON.stringify({ event: "turn.start", bot: "kami" }));
-        ws.send(JSON.stringify({ event: "delta", bot: "kami", text: "Live reply stays visible" }));
+        // Upstream displays completed streamed lines; an unterminated delta stays behind the typing indicator.
+        ws.send(JSON.stringify({ event: "delta", bot: "kami", text: "Live reply stays visible\n" }));
       } else server.send(raw);
     });
     server.onMessage((raw) => ws.send(raw));
