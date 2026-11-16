@@ -1,18 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  activityText,
-  chatRoute,
-  createStore,
-  folderKey,
-  setChatRoute,
-  initialState,
-  reduce,
-  replyChipFor,
-  selectTimeline,
-  type Action,
-  type AppState,
-  type BridgeLike,
-} from "./store";
+import { answerSlot, answerSoFar, activityText, chatRoute, createStore, folderKey, setChatRoute, initialState, reduce, replyChipFor, selectTimeline, type Action, type AppState, type BridgeLike } from "./store";
 import type { Away, BridgeEvent, ChatOpenResult } from "../lib/protocol";
 import type { BridgeStatus } from "../lib/bridge";
 
@@ -116,6 +103,48 @@ describe("reducer: a full turn", () => {
     expect(s.chats.kami.turn!.streaming).toBe("abcd");
   });
 
+  it("the answer being written shows a whole line at a time, never the commentary beside a tool call", () => {
+    const d = (text: string) => ({ event: "delta" as const, bot: "kami", text });
+    let s = run(initialState(), [{ event: "turn.start", bot: "kami" }, d("Now I'll run the tests.\n\n")]);
+    // commentary, then the call it was about: none of it is the answer
+    s = run(s, [{ event: "tool.start", bot: "kami", tool_id: "t1", name: "terminal", detail: "pnpm test" }]);
+    expect(answerSoFar(s.chats.kami.turn!)).toBe("");
+    s = run(s, [{ event: "tool.end", bot: "kami", tool_id: "t1", name: "terminal", ok: true, ms: 10 }, d("\n\nAll 35 tests pa")]);
+    // a line still being typed does not show
+    expect(answerSoFar(s.chats.kami.turn!)).toBe("");
+    s = run(s, [d("ss.\n\n- typecheck: ok\n- e2e: 3")]);
+    expect(answerSoFar(s.chats.kami.turn!)).toBe("All 35 tests pass.\n\n- typecheck: ok");
+    // an open code block waits for its closing fence
+    s = run(s, [d("5 passed\n\n```sh\npnpm test\n")]);
+    expect(answerSoFar(s.chats.kami.turn!)).toBe("All 35 tests pass.\n\n- typecheck: ok\n- e2e: 35 passed");
+    s = run(s, [d("```\n")]);
+    expect(answerSoFar(s.chats.kami.turn!)).toBe("All 35 tests pass.\n\n- typecheck: ok\n- e2e: 35 passed\n\n```sh\npnpm test\n```");
+    // the final message replaces it whole
+    s = run(s, [{ event: "message", bot: "kami", id: "a1", text: "All 35 tests pass." }]);
+    expect(s.chats.kami.turn!.streaming).toBe("");
+    expect(answerSoFar(s.chats.kami.turn!)).toBe("");
+  });
+
+  it("a message sent while the answer is written stays under that answer, which lands where it was being written", () => {
+    let s = reduce(initialState(), { type: "local.user", bot: "kami", id: "l1", text: "first question", now: 1000 });
+    s = run(s, [{ event: "turn.start", bot: "kami" }, { event: "delta", bot: "kami", text: "Line one.\nline tw" }]);
+    s = reduce(s, { type: "local.user", bot: "kami", id: "l2", text: "sent mid-answer", now: 2000 });
+    const kinds = (st: typeof s) => st.chats.kami.items.map((i) => (i.kind === "user" || i.kind === "assistant" ? `${i.kind}:${i.text}` : i.kind));
+    // the answer being written goes right before the message sent while it was written
+    expect(s.chats.kami.items[answerSlot(s.chats.kami)]).toMatchObject({ kind: "user", id: "l2" });
+    s = run(s, [{ event: "message", bot: "kami", id: "a1", text: "Line one.\nline two." }, { event: "turn.end", bot: "kami", outcome: "done" }]);
+    expect(kinds(s)).toEqual(["user:first question", "activity", "assistant:Line one.\nline two.", "user:sent mid-answer"]);
+    // a message sent before any of the answer showed (Hermes folds it into the running turn): the answer lands after it
+    let t = reduce(initialState(), { type: "local.user", bot: "kami", id: "m1", text: "q", now: 1000 });
+    t = run(t, [{ event: "turn.start", bot: "kami" }, { event: "tool.start", bot: "kami", tool_id: "x", name: "terminal", detail: "ls" }]);
+    t = reduce(t, { type: "local.user", bot: "kami", id: "m2", text: "also this", now: 2000 });
+    t = run(t, [{ event: "message", bot: "kami", id: "b1", text: "Both done." }, { event: "turn.end", bot: "kami", outcome: "done" }]);
+    expect(kinds(t)).toEqual(["user:q", "activity", "user:also this", "assistant:Both done."]);
+    // the next turn answers it, under it
+    s = run(s, [{ event: "turn.start", bot: "kami" }, { event: "message", bot: "kami", id: "a2", text: "Second answer." }, { event: "turn.end", bot: "kami", outcome: "done" }]);
+    expect(kinds(s).slice(-3)).toEqual(["user:sent mid-answer", "activity", "assistant:Second answer."]);
+  });
+
   it("a status, thinking, step or text outside a turn starts none; a status just before turn.start opens it", () => {
     // Hermes says a goal or loop verdict after the turn's message.complete (prompt_turn._goal_followup_after_turn):
     // it must not start a turn nothing ends
@@ -198,16 +227,73 @@ describe("reducer: a full turn", () => {
     expect(s.chats.kami.messages.at(-1)).toMatchObject({ role: "assistant", text: "partial answer" });
   });
 
-  it("closes open steps when a turn is interrupted", () => {
+  it("a step still running when the turn is stopped reads as stopped, not finished (a bot's turn too)", () => {
+    // audit O11: the bot chat shares this reducer; a step Stop cut short is not ok, and is marked stopped
     const s = run(initialState(), [
       { event: "turn.start", bot: "kami" },
       { event: "tool.start", bot: "kami", tool_id: "a", name: "terminal", detail: "sleep 9" },
+      { event: "tool.start", bot: "kami", tool_id: "b", name: "read_file", detail: "a.txt" },
+      { event: "tool.end", bot: "kami", tool_id: "b", name: "", ok: true, ms: 10 },
       { event: "turn.end", bot: "kami", outcome: "interrupted" },
     ]);
     const t = s.chats.kami.lastTurn!;
     expect(t.outcome).toBe("interrupted");
+    expect(t.steps[0]).toMatchObject({ ok: false, stopped: true });
     expect(t.steps[0].endedAt).toBeDefined();
-    expect(t.steps[0].ok).toBeUndefined();
+    // a step that had ended before Stop keeps its own end
+    expect(t.steps[1]).toMatchObject({ ok: true });
+    expect(t.steps[1].stopped).toBeUndefined();
+  });
+
+  it("a stopped turn's time is from its start to the Stop, on the recorded stream's clock (codex-B: 6.1 s)", () => {
+    // audit O11 follow-up: "Stopped after 0s" beside a step that ran on. codex-B.events.jsonl: turn.start at 8.684 s,
+    // tool.start (sleep 40) at 11.712 s, turn.end interrupted at 14.784 s
+    let s = run(initialState(), [{ event: "turn.start", bot: "agent:s1" }], 8_684);
+    s = run(s, [{ event: "tool.start", bot: "agent:s1", tool_id: "a", name: "terminal", detail: "sleep 40; echo late" }], 11_712);
+    s = run(s, [{ event: "turn.end", bot: "agent:s1", outcome: "interrupted" }], 14_784);
+    const t = s.chats["agent:s1"].lastTurn!;
+    expect(t.endedAt! - t.startedAt).toBe(6_100);
+    expect(t.steps[0].endedAt! - t.steps[0].startedAt).toBe(3_072);
+  });
+
+  it("a turn that ends on its own leaves no step marked stopped", () => {
+    for (const outcome of ["done", "ended", "error"] as const) {
+      const s = run(initialState(), [
+        { event: "turn.start", bot: "kami" },
+        { event: "tool.start", bot: "kami", tool_id: "a", name: "terminal", detail: "sleep 9" },
+        { event: "turn.end", bot: "kami", outcome },
+      ]);
+      expect(s.chats.kami.lastTurn!.steps[0].stopped, outcome).toBeUndefined();
+      expect(s.chats.kami.lastTurn!.steps[0].ok, outcome).toBeUndefined();
+    }
+  });
+
+  it("the end of a stopped step reported after its turn goes to that step; any other late end is dropped", () => {
+    const s0 = run(initialState(), [
+      { event: "turn.start", bot: "kami" },
+      { event: "tool.start", bot: "kami", tool_id: "a", name: "terminal", detail: "sleep 40; echo late" },
+      { event: "turn.end", bot: "kami", outcome: "interrupted" },
+      { event: "turn.start", bot: "kami" },
+      { event: "turn.end", bot: "kami", outcome: "done" },
+    ]);
+    const s = run(s0, [{ event: "tool.end", bot: "kami", tool_id: "a", name: "", ok: true, ms: 39_887 }], T0 + 60_000);
+    const acts = s.chats.kami.items.filter((i) => i.kind === "activity");
+    expect(acts).toHaveLength(2);
+    const step = acts[0].kind === "activity" ? acts[0].turn.steps[0] : null;
+    expect(step).toMatchObject({ ok: false, stopped: true, late: { ok: true, ms: 39_887, endedAt: T0 + 60_000 } });
+    // nothing else moved: no new turn, the later turn untouched
+    expect(s.chats.kami.turn).toBeNull();
+    expect(acts[1].kind === "activity" && acts[1].turn.steps).toEqual([]);
+    // an unknown step's end outside a turn changes nothing
+    expect(run(s, [{ event: "tool.end", bot: "kami", tool_id: "zz", name: "", ok: true, ms: 1 }], T0 + 61_000).chats.kami).toBe(s.chats.kami);
+  });
+
+  it("the agent's own retry shows on the live line as which try it is", () => {
+    const s = run(initialState(), [
+      { event: "turn.start", bot: "agent:s1" },
+      { event: "status", bot: "agent:s1", text: "Retrying 1 of 5", retry: { attempt: 1, max: 5 } },
+    ]);
+    expect(s.chats["agent:s1"].turn!.status).toBe("Retrying 1 of 5");
   });
 
   it("a second turn gets its own activity row", () => {
@@ -276,13 +362,26 @@ describe("unread", () => {
   it("counts assistant messages and routine lines for unselected bots only", () => {
     let s = reduce(initialState(), { type: "select", bot: "kami" });
     s = run(s, [{ event: "message", bot: "friren", id: "x1", text: "hello" }]);
-    s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "Repo watch", status: "ok", ts: T0 / 1000 }]);
+    s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "Repo watch", status: "error", ts: T0 / 1000 }]);
     s = run(s, [{ event: "message", bot: "kami", id: "k1", text: "mine" }]);
     expect(s.unread.friren).toBe(2);
     expect(s.unread.kami ?? 0).toBe(0);
     expect(s.chats.friren.items.some((i) => i.kind === "routine")).toBe(true);
     s = reduce(s, { type: "select", bot: "friren" });
     expect(s.unread.friren).toBe(0);
+  });
+
+  it("a routine run that went fine draws no line and no unread; a failed one does", () => {
+    let s = reduce(initialState(), { type: "select", bot: "kami" });
+    for (const status of ["ok", "success", "done", "completed", "", "silent"])
+      s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "sso refresh", status, ts: T0 / 1000 }]);
+    expect(s.chats.friren?.items.some((i) => i.kind === "routine") ?? false).toBe(false);
+    expect(s.unread.friren ?? 0).toBe(0);
+    ["error", "Failed", "delivery_failed"].forEach((status, n) => {
+      s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "sso refresh", status, ts: T0 / 1000 + 1 + n }]);
+    });
+    expect(s.chats.friren.items.filter((i) => i.kind === "routine")).toHaveLength(3);
+    expect(s.unread.friren).toBe(3);
   });
 
   it("does not double count a message re-delivered with the same id", () => {
@@ -313,6 +412,19 @@ describe("chat.opened merging", () => {
     expect(s.chats.kami.turn).toBeNull();
     expect(s.chats.kami.lastTurn).not.toBeNull();
   });
+
+  it("a chat.open reply older than a live turn changes nothing about it (runs.spec flake: the reply ended a turn that started after it was asked)", () => {
+    const ev = (e: Record<string, unknown>, now: number) => ({ type: "event" as const, ev: { bot: "kami", ...e } as never, now });
+    // asked at T0; the turn starts at T0+50 and its step comes in; the reply (running:false, read at T0) lands at T0+300
+    let s = reduce(initialState(), ev({ event: "turn.start" }, T0 + 50));
+    s = reduce(s, ev({ event: "tool.start", tool_id: "d1", name: "delegate_task", detail: "x" }, T0 + 60));
+    s = reduce(s, { type: "chat.opened", bot: "kami", res: opened({ running: false }), now: T0 + 300, since: T0 });
+    expect(s.chats.kami.turn?.steps.map((x) => x.endedAt)).toEqual([undefined]);
+    // and a reply that said running about a turn that ended after the ask does not start a ghost turn
+    s = reduce(s, ev({ event: "turn.end", outcome: "done" }, T0 + 400));
+    s = reduce(s, { type: "chat.opened", bot: "kami", res: opened({ running: true }), now: T0 + 500, since: T0 + 350 });
+    expect(s.chats.kami.turn).toBeNull();
+  });
 });
 
 // ---- store (reducer + a fake bridge) ----------------------------------------------------------
@@ -323,6 +435,8 @@ function fakeBridge() {
   const calls: { op: string; params: Record<string, unknown> }[] = [];
   let history = [{ id: "h1", role: "user" as const, text: "hi", ts: T0 / 1000 - 10 }];
   const offline = new Set<string>();
+  // bots.list status per bot (default online); the real bridge reads "offline" for any profile not yet attached
+  const listed = new Map<string, string>();
   let running = false;
   const bridge: BridgeLike = {
     connect: async () => {
@@ -338,7 +452,7 @@ function fakeBridge() {
         case "bots.list":
           return {
             bots: ["kami", "friren"].map((name) => ({
-              name, display_name: name, is_default: false, model: "m", provider: "p", description: "", status: "online", running: false,
+              name, display_name: name, is_default: false, model: "m", provider: "p", description: "", status: listed.get(name) ?? "online", running: false,
             })),
           };
         case "chat.open":
@@ -352,6 +466,8 @@ function fakeBridge() {
           return { providers: [], current: { model: "Opus 5.5", provider: "claude-proxy", reasoning: "high" }, reasoning_levels: ["low"] };
         case "chat.send":
           return { input_id: "i1" };
+        case "chat.attach":
+          return { text: `Attached ${params.name}`, ref_text: params.kind === "image" ? "" : `@file:${params.name}` };
         case "skills.list":
           if (params.bot === "friren") throw { code: "unknown_op", message: "no such op: skills.list" };
           return { skills: [{ name: "plan", description: "Plan it" }, { name: "review", description: "" }] };
@@ -367,22 +483,70 @@ function fakeBridge() {
     status: (s: BridgeStatus) => statusH!(s),
     setHistory: (h: typeof history) => (history = h),
     setOffline: (bot: string, on = true) => on ? offline.add(bot) : offline.delete(bot),
+    setListedStatus: (bot: string, status: string) => listed.set(bot, status),
     setRunning: (r: boolean) => (running = r),
   };
 }
 
 describe("store", () => {
-  it("init loads bots, selects the first, and loads its chat", async () => {
+  it("init loads bots, lists one (the first, no default here), selects it and loads only its chat", async () => {
     const f = fakeBridge();
     const store = createStore(f.bridge, { now: () => T0 });
     await store.actions.init();
     const s = store.getState();
     expect(s.bots.map((b) => b.name)).toEqual(["kami", "friren"]);
+    expect(s.ui.roster).toEqual(["kami"]);
     expect(s.selectedBot).toBe("kami");
     expect(s.chats.kami.loaded).toBe(true);
-    expect(s.chats.friren.loaded).toBe(true);
+    // a profile outside the list is not opened as a chat (that would make its Bot Chat); it is only asked for the
+    // prompts its existing Bot Chat holds
+    expect(s.chats.friren).toBeUndefined();
+    const opens = f.calls.filter((c) => c.op === "chat.open");
+    expect(opens.filter((c) => c.params.existing_only !== true).map((c) => c.params.bot)).toEqual(["kami"]);
+    expect(opens.filter((c) => c.params.existing_only === true).map((c) => c.params.bot)).toEqual(["friren"]);
     expect(s.elsewhere.kami).toHaveLength(1);
     expect(s.models.kami.current.model).toBe("Opus 5.5");
+  });
+
+  it("a bot outside the list that bots.list reads offline (not attached yet) is still asked for its waiting prompts", async () => {
+    const f = fakeBridge();
+    f.setListedStatus("friren", "offline");
+    const store = createStore(f.bridge, { now: () => T0 });
+    await store.actions.init();
+    expect(store.getState().ui.roster).toEqual(["kami"]);
+    const peeks = f.calls.filter((c) => c.op === "chat.open" && c.params.existing_only === true).map((c) => c.params.bot);
+    expect(peeks).toEqual(["friren"]);
+    expect(store.getState().chats.friren).toBeUndefined();
+  });
+
+  it("roster: the bot saved for resume starts alone; list, open, remove; the last one stays", async () => {
+    const f = fakeBridge();
+    const resume = { v: 1 as const, at: T0, bot: "friren", view: "chat" as const, session: null, panelOpen: false, panelTab: "details" as const, runsFull: false, runId: null, drafts: {}, sessions: [] };
+    const store = createStore(f.bridge, { now: () => T0, resume: () => resume, hiddenBots: () => [] });
+    await store.actions.init();
+    expect(store.getState().ui.roster).toEqual(["friren"]);
+    expect(store.getState().selectedBot).toBe("friren");
+    // the last listed bot cannot be removed
+    store.actions.listBot("friren", false);
+    expect(store.getState().ui.roster).toEqual(["friren"]);
+    // opening a bot outside the list (Needs you, an @mention) brings it in
+    await store.actions.selectBot("kami");
+    expect(store.getState().ui.roster).toEqual(["friren", "kami"]);
+    // removing the open bot opens the first one left; its pin goes with it
+    store.actions.pinBot("kami", true);
+    store.actions.listBot("kami", false);
+    const s = store.getState();
+    expect(s.ui.roster).toEqual(["friren"]);
+    expect(s.ui.pinned).toEqual([]);
+    expect(s.selectedBot).toBe("friren");
+  });
+
+  it("roster: bots hidden before the roster never enter it", async () => {
+    const f = fakeBridge();
+    const store = createStore(f.bridge, { now: () => T0, hiddenBots: () => ["kami"] });
+    await store.actions.init();
+    expect(store.getState().ui.roster).toEqual(["friren"]);
+    expect(store.getState().selectedBot).toBe("friren");
   });
 
   it("send adds the user row and calls chat.send with bot + text only", async () => {
@@ -399,15 +563,15 @@ describe("store", () => {
     const f = fakeBridge();
     const store = createStore(f.bridge, { now: () => T0 });
     await store.actions.init();
-    await store.actions.send("before the list ./plan"); // names not read yet: sent as typed
+    await store.actions.send("before the list $plan"); // names not read yet: sent as typed
     expect(await store.actions.skills("kami")).toHaveLength(2);
     await store.actions.skills("kami");
     expect(f.calls.filter((c) => c.op === "skills.list")).toHaveLength(1); // read once per bot
-    await store.actions.send(" fix ./review this ./plan now ");
+    await store.actions.send(" fix $review this $plan now ");
     const sends = f.calls.filter((c) => c.op === "chat.send").map((c) => c.params.text);
-    expect(sends).toEqual(["before the list ./plan", "/review /plan fix this now"]);
+    expect(sends).toEqual(["before the list $plan", "/review /plan fix this now"]);
     const row = () => store.getState().chats.kami.items.filter((i) => i.kind === "user").at(-1)!;
-    expect(row()).toMatchObject({ text: "fix ./review this ./plan now", sent: "/review /plan fix this now" });
+    expect(row()).toMatchObject({ text: "fix $review this $plan now", sent: "/review /plan fix this now", skills: ["review", "plan"] });
 
     f.setHistory([{ id: "h9", role: "user", text: "/review /plan fix this now", ts: T0 / 1000 }]);
     f.status("closed");
@@ -415,7 +579,14 @@ describe("store", () => {
     await new Promise((r) => setTimeout(r, 0));
     const users = store.getState().chats.kami.items.filter((i) => i.kind === "user");
     expect(users.filter((i) => "sent" in i && i.sent === "/review /plan fix this now")).toHaveLength(1);
-    expect(users.find((i) => i.id === "h9")).toMatchObject({ text: "fix ./review this ./plan now" });
+    expect(users.find((i) => i.id === "h9")).toMatchObject({ text: "fix $review this $plan now", skills: ["review", "plan"] });
+
+    // /name anywhere, ./name and Hermes' own commands go out byte for byte, with no pill
+    for (const t of ["say ./plan out loud", "fix /plan now", "/plan fix it", "/new"]) {
+      await store.actions.send(t);
+      expect(row()).not.toHaveProperty("skills");
+    }
+    expect(f.calls.filter((c) => c.op === "chat.send").map((c) => c.params.text).slice(-4)).toEqual(["say ./plan out loud", "fix /plan now", "/plan fix it", "/new"]);
 
     // a bridge without the op: an empty list, no error, asked again next time
     expect(await store.actions.skills("friren")).toEqual([]);
@@ -447,6 +618,31 @@ describe("store", () => {
     await expect(store.actions.sendWithFiles("x", [file("ok.png", "image"), bad])).rejects.toThrow("Couldn't attach b.png");
     expect(f.calls.slice(before).map((c) => c.op)).toEqual(["chat.attach"]); // no chat.send
     expect(store.getState().chats.kami.items.at(-1)).toBe(row); // no new bubble
+  });
+
+  it("a queued file and skill keep one typed bubble when its saved acknowledgement returns", async () => {
+    const f = fakeBridge();
+    const store = createStore(f.bridge, { now: () => T0 });
+    await store.actions.init();
+    await store.actions.skills("kami");
+    f.emit({ event: "turn.start", bot: "kami" });
+    await store.actions.sendWithFiles("Please $plan this", [{
+      name: "brief.pdf", size: 3, kind: "file", url: null, attach: "pdf", read: async () => "QUJD",
+    }]);
+    expect(f.calls.filter((c) => c.op === "chat.attach")).toHaveLength(0);
+    f.emit({ event: "turn.end", bot: "kami", outcome: "done" });
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    const sends = f.calls.filter((c) => c.op === "chat.send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0].params.text).toContain("@file:brief.pdf");
+    f.setHistory([{ id: "saved-file", role: "user", text: String(sends[0].params.text), ts: T0 / 1000 }]);
+    f.status("closed");
+    f.status("open");
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    const rows = store.getState().chats.kami.items.filter((i) => i.kind === "user");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: "saved-file", text: "Please $plan this", files: [{ name: "brief.pdf" }], skills: ["plan"] });
+    expect(f.calls.filter((c) => c.op === "chat.send")).toHaveLength(1);
   });
 
   it("reconnect keeps state and re-reads the chat without duplicating it", async () => {
@@ -553,6 +749,28 @@ describe("store", () => {
     expect(store.getState().ui).toMatchObject({ view: "chat", session: null });
   });
 
+  it("a page's back returns where it was opened from: a session, through another page, else the chat", () => {
+    const f = fakeBridge();
+    const store = createStore(f.bridge);
+    store.actions.openSession("s1");
+    store.actions.openAutomations();
+    store.actions.openPlugins("kami");
+    store.actions.openSettings();
+    store.actions.closeSettings();
+    expect(store.getState().ui).toMatchObject({ view: "session", session: "s1" });
+    store.actions.openSession(null);
+    store.actions.openPlugins("kami");
+    store.actions.closeSettings();
+    expect(store.getState().ui.view).toBe("chat");
+    // a session closed while the page was open: back lands on the chat
+    store.actions.openSession("s1");
+    store.actions.openSettings();
+    store.actions.openSession(null);
+    store.actions.openSettings();
+    store.actions.closeSettings();
+    expect(store.getState().ui.view).toBe("chat");
+  });
+
   it("Reply there: the chip goes along as reply_to once, then clears; a turn end re-reads the places", async () => {
     const f = fakeBridge();
     const store = createStore(f.bridge, { now: () => T0 });
@@ -633,5 +851,106 @@ describe("SESSIONS chats in the same reducer", () => {
     const s = store.getState();
     expect(s.chats["agent:s1"].turn).not.toBeNull();
     expect(s.chats[folderKey("kami", "f1")].turn).toBeNull();
+  });
+});
+
+// The real fan-out turn on kami (bridge/tests/fixtures/real-subagent-turn.json), as the bridge's subagent events:
+// the parent's turn ends before the two children report back.
+describe("subagent events: one fan-out per delegate_task, one row per subagent", () => {
+  const bot = "kami";
+  const g0 = "Run the shell command `date +%F` in the terminal exactly once and return its exact stdout";
+  const g1 = "Run the shell command `uname -s` in the terminal exactly once and return its exact stdout";
+  const sub = (id: string, index: number, goal: string, state: string, extra: Record<string, unknown> = {}) =>
+    ({ event: "subagent", bot, id, index, count: 2, goal, model: "claude-fable-5-2", state, ...extra }) as BridgeEvent;
+  const d = { delegation: "deleg_40dc82e8" };
+  const turn: BridgeEvent[] = [
+    { event: "turn.start", bot },
+    { event: "tool.start", bot, tool_id: "t1", name: "delegate_task", detail: "2 tasks" },
+    sub("sa-0", 0, g0, "queued"),
+    sub("sa-1", 1, g1, "queued"),
+    sub("sa-0", 0, g0, "running", d),
+    sub("sa-1", 1, g1, "running", d),
+    { event: "tool.end", bot, tool_id: "t1", name: "delegate_task", ok: true, ms: 98 },
+    sub("sa-1", 1, g1, "thinking", d),
+    sub("sa-1", 1, g1, "running", { ...d, tool: "terminal", step: "uname -s" }),
+    { event: "message", bot, id: "m1", text: "Both are on it." },
+    { event: "turn.end", bot, outcome: "done" },
+    sub("sa-1", 1, g1, "done", { ...d, summary: "Darwin", seconds: 6.1 }),
+    sub("sa-0", 0, g0, "done", { ...d, summary: "2026-11-11", seconds: 8.8 }),
+  ];
+  const fanouts = (s: AppState) => s.chats[bot].items.flatMap((i) => (i.kind === "activity" ? i.turn.fanouts ?? [] : []));
+
+  it("groups the children into one fan-out of the turn that started them, also after that turn ended", () => {
+    const s = run(initialState(), turn);
+    const f = fanouts(s);
+    expect(f).toHaveLength(1);
+    expect(f[0].delegation).toBe("deleg_40dc82e8");
+    expect(f[0].subs.map((x) => [x.id, x.state, x.summary, x.seconds])).toEqual([
+      ["sa-0", "done", "2026-11-11", 8.8],
+      ["sa-1", "done", "Darwin", 6.1],
+    ]);
+    // the late events open no second turn and touch no new activity row
+    expect(s.chats[bot].items.filter((i) => i.kind === "activity")).toHaveLength(1);
+    expect(s.chats[bot].turn).toBeNull();
+  });
+
+  it("keeps the current step while running and drops it for the result line when done", () => {
+    const mid = run(initialState(), turn.slice(0, 9));
+    const row = fanouts(mid)[0].subs[1];
+    expect([row.state, row.tool, row.step]).toEqual(["running", "terminal", "uname -s"]);
+    const end = fanouts(run(initialState(), turn))[0].subs[1];
+    expect([end.step, end.tool, end.summary]).toEqual([undefined, undefined, "Darwin"]);
+  });
+
+  it("two delegate_task calls in one turn are two fan-outs; a late running event never revives a finished child", () => {
+    const second = [
+      sub("sb-0", 0, "Second wave A", "queued"),
+      sub("sb-1", 1, "Second wave B", "queued"),
+      sub("sb-0", 0, "Second wave A", "running", { delegation: "deleg_2" }),
+    ];
+    const s = run(initialState(), [...turn.slice(0, 9), ...second, sub("sa-1", 1, g1, "done", d), sub("sa-1", 1, g1, "running", d)]);
+    const f = fanouts(s);
+    expect(f.map((x) => x.subs.map((r) => r.id))).toEqual([["sa-0", "sa-1"], ["sb-0", "sb-1"]]);
+    expect(f[0].subs[1].state).toBe("done");
+  });
+
+  it("a second turn's fan-out with the same subagent ids lands in that turn, by its delegation id", () => {
+    const again: BridgeEvent[] = [
+      { event: "turn.start", bot },
+      { event: "tool.start", bot, tool_id: "t2", name: "delegate_task", detail: "2 tasks" },
+      sub("sa-0", 0, g0, "queued"),
+      sub("sa-1", 1, g1, "queued"),
+      sub("sa-0", 0, g0, "running", { delegation: "deleg_second" }),
+      sub("sa-1", 1, g1, "running", { delegation: "deleg_second" }),
+      { event: "turn.end", bot, outcome: "done" },
+      sub("sa-0", 0, g0, "done", { delegation: "deleg_second", summary: "again", seconds: 1 }),
+    ];
+    const s = run(initialState(), [...turn, ...again]);
+    const turns = s.chats[bot].items.flatMap((i) => (i.kind === "activity" ? [i.turn] : []));
+    expect(turns.map((t) => t.fanouts?.map((f) => [f.delegation, f.subs.map((r) => r.state).join(",")]))).toEqual([
+      [["deleg_40dc82e8", "done,done"]],
+      [["deleg_second", "done,running"]],
+    ]);
+  });
+
+  it("a subagent event with no turn to take it (chat opened afterwards) changes nothing", () => {
+    const s0 = run(initialState(), [{ event: "message", bot, id: "m0", text: "hi" }]);
+    expect(run(s0, [sub("sa-9", 0, "x", "running", d)])).toBe(s0);
+  });
+
+  it("a subagent's file edit keeps its change per file; said again when it ran, it takes the final change", () => {
+    const file = (lines: string[]) => ({ path: "calc.py", kind: "update" as const, lines, added: lines.filter((l) => l[0] === "+").length, removed: 0 });
+    const asked = file(["@@ -6 +6,3 @@", "     return a - b", "+def mul(a, b):"]);
+    const ran = file(["@@ -6 +6,5 @@", "     return a - b", "+", "+", "+def mul(a, b):", "+    return a * b"]);
+    const s = run(initialState(), [
+      ...turn.slice(0, 9),
+      sub("sa-1", 1, g1, "running", { ...d, tool: "patch", step: "calc.py +4", diff: [asked] }),
+      sub("sa-1", 1, g1, "running", { ...d, tool: "patch", step: "calc.py +4", diff: [ran] }),
+    ]);
+    const steps = fanouts(s)[0].subs[1].steps ?? [];
+    expect(steps.map((x) => [x.text, x.diff?.[0]?.lines.length])).toEqual([
+      ["uname -s", undefined],
+      ["calc.py +4", 6],
+    ]);
   });
 });

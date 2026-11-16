@@ -1096,8 +1096,8 @@ class PromptSlotTests(AppTestCase):
         self.assert_denied(run)
 
     def test_up_then_enter_on_an_armed_approval_still_denies(self) -> None:
-        # Up then Enter is the composer's recall-and-resend. On an approval Up moves nothing,
-        # so the Enter answers the default deny; the replay accepts only the deny.
+        # Up then Enter is the composer's recall-and-resend. On an approval Up moves from allow once, where it
+        # opens, to deny, the first row, so the Enter answers deny; the replay accepts only the deny.
         run = self.approval_run()
         run.terminal.script(
             self.submit(run, "Run rm -rf ./omh-m0-probe-dir"),
@@ -1730,6 +1730,32 @@ class ShellLineTests(unittest.TestCase):
         self.assertEqual(stream.getvalue(), "gateway said: boom link\n")
 
 class ModelChainPickerTests(unittest.TestCase):
+    def test_identity_save_preserves_prompt_and_cancel_and_noop_do_not_write(self) -> None:
+        from omh.plugin_bundle.omh.model_chain_picker import picker_rows
+
+        root = Path(self.enterContext(make_test_tempdir("omh-tui-picker-")))
+        environ = {"OMH_HOME": str(root / "omh"), "HERMES_HOME": str(root / "hermes"), "NO_COLOR": "1"}
+        path = root / "omh" / "routing" / "identities.json"
+        path.parent.mkdir(parents=True)
+        profile = {"prompt": "Existing prompt.\nDo not rewrite it.", "model_chain": [{"model_id": "deepseek-flash", "reasoning_effort": "low"}]}
+        document = {"schema_version": "omh_identity_profiles/v1", "identities": {"review": profile, "broken": {"keep": "me"}}}
+        path.write_text(json.dumps(document), encoding="utf-8")
+        original = path.read_bytes()
+        count = len(picker_rows(root / "omh", hermes_home=root / "hermes")["categories"])
+        for ending in ((Key(ENTER),), (Key(CHAR, " "), Key(ESCAPE)), (Key(CHAR, " "), Key(ENTER))):
+            keys = iter([Key(DOWN)] * count + list(ending))
+            message = run_model_chain_picker(
+                environ, DEFAULT_THEME, read_key=lambda: picker_key(next(keys)), write=lambda _: None, width=120,
+            )
+            if ending[-1].name == ESCAPE or len(ending) == 1:
+                self.assertEqual(path.read_bytes(), original)
+            else:
+                self.assertIn("Saved 1 custom identity", message)
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
+                    **document, "identities": {"review": {**profile, "enabled": False}, "broken": {"keep": "me"}},
+                })
+        self.assertEqual(sorted(item.name for item in path.parent.iterdir()), ["identities.json"])
+
     def test_tui_keys_map_to_picker_tokens_and_ctrl_c_ctrl_d_esc_cancel(self) -> None:
         cases = {
             Key(UP): "up", Key(DOWN): "down", Key(LEFT): "left", Key(RIGHT): "right", Key(ENTER): "enter",
@@ -2043,16 +2069,16 @@ class OpeningTests(AppTestCase):
             [  # each block on its rail, a blank row between two blocks and two between two calls, as for a live turn
                 "┃ ❯ What is in this repo?",
                 "",
-                "┃ ⚚ Hermes",  # who wrote it; the record does not say which model, so none is named
-                "┃   Let me look.",
+                "⚚ Hermes",  # who wrote it; the record does not say which model, so none is named
+                "  Let me look.",
                 "",
                 "┃ ● terminal(ls -la)",
                 "",
                 "",
                 "┃ ● read_file(README.md)",
                 "",
-                "┃ ⚚ Hermes",
-                "┃   It is oh-my-hermes.",
+                "⚚ Hermes",
+                "  It is oh-my-hermes.",
                 "",
                 "┃ ❯ Thanks",
             ],
@@ -2639,7 +2665,8 @@ class SessionSwitchTests(AppTestCase):
         startup, listing = run.calls("session.list")  # the fresh session's last-session lookup, then /sessions
         self.assertEqual((startup["params"], listing["params"]), ({"limit": 3}, {"limit": 50}))
         picker = "\n".join(terminal.captures["picker"])
-        self.assertIn("● Reply with ok", picker)
+        self.assertIn("Reply with ok", picker)  # the `/resume` card: its name, then `● this session · …`
+        self.assertIn("● this session", picker)
         self.assertIn("2 messages", picker)
         methods = [frame.get("method") for frame in run.frames]
         (resume,) = run.calls("session.resume")
@@ -2840,7 +2867,7 @@ class KeyTests(AppTestCase):
         self.assert_clean_run(run)
         details = "\n".join(terminal.captures["details"])
         self.assertIn("❯ Reply with exactly the word: ok", details)
-        self.assertIn("┃ ⚚ Hermes · deepseek-v4.1-flash-ultrafast\n┃   ok", details)
+        self.assertIn("⚚ Hermes · deepseek-v4.1-flash-ultrafast\n  ok", details)
         self.assertIn("history · ", details)
 
     def test_ctrl_l_redraws_the_session_from_memory(self) -> None:

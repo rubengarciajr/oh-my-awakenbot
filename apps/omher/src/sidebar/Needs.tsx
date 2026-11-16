@@ -4,7 +4,7 @@
 // item opens that bot's chat with the card scrolled into view and focused. ⌘J does the same for the next ask. Esc
 // or a click outside closes the list. Past three asks the list ends on the third, whole, and a "+2 more" row shows
 // the rest (then the list scrolls).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNow } from "../elsewhere/useNow";
 import { t } from "../i18n";
 import { askFrom, askText, isSessionChat, useStore, type Ask } from "../state/store";
@@ -34,6 +34,16 @@ export function stripText(n: number, who: string, ask: string, max = 32): { coun
   const flat = ask.replace(/`/g, "").replace(/\s+/g, " ").trim();
   const words = flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
   return { count: n === 1 ? t("needs.one") : t("needs.many", { n }), rest: ` · ${who}: ${words}` };
+}
+
+/** The strip's words with each " · " held to the word after it in one unbreakable box: where the sidebar cuts the
+ *  line, the ellipsis then never follows a lone separator ("web-app ·…"). The text stays the same. */
+export function glued(text: string): ReactNode[] {
+  return text.split(" · ").flatMap((part, i) => {
+    if (i === 0) return [part];
+    const [, word, rest] = /^(\S*)([\s\S]*)$/.exec(part)!;
+    return [" ", <span key={i} className="needs-sep">{`· ${word}`}</span>, rest];
+  });
 }
 
 /** Asks the list shows before its "+N more" row: three two-line entries fit without cutting one. */
@@ -92,7 +102,7 @@ export function NeedsStrip({ asks }: { asks: Ask[] }) {
         <span className="needs-ic" aria-hidden="true" />
         <span className="needs-t" title={line.count + line.rest} data-testid="needs-line">
           {line.count}
-          <span className="needs-who">{line.rest}</span>
+          <span className="needs-who">{glued(line.rest)}</span>
         </span>
         <span className="needs-k" aria-hidden="true">
           {/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘J" : "Ctrl+J"}
@@ -142,37 +152,6 @@ export function NeedsStrip({ asks }: { asks: Ask[] }) {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Bots hidden from the sidebar, each with Show. Opened from a row menu's "Show hidden…". */
-export function HiddenList({ onClose }: { onClose: () => void }) {
-  const s = useStore();
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [onClose]);
-  const hidden = s.ui.hidden.map((n) => s.bots.find((b) => b.name === n)).filter((b) => !!b);
-  useEffect(() => {
-    if (!hidden.length) onClose();
-  }, [hidden.length, onClose]);
-  return (
-    <div className="hidden-list" ref={ref} role="dialog" aria-label={t("needs.hidden")} data-testid="hidden-list">
-      <div className="hidden-h">{t("needs.hidden")}</div>
-      {hidden.map((b) => (
-        <div key={b.name} className="hidden-row">
-          <Avatar bot={b.name} size={20} />
-          <span className="hidden-n">{b.display_name}</span>
-          <button type="button" className="hidden-show" onClick={() => s.hideBot(b.name, false)} aria-label={t("needs.showOf", { name: b.display_name })}>
-            {t("needs.show")}
-          </button>
-        </div>
-      ))}
     </div>
   );
 }

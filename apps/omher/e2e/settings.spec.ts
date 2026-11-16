@@ -41,11 +41,11 @@ test.beforeEach(async () => {
   await mock("mock.reset");
 });
 
-test("model pill: one control, popover lists providers and models with the current one checked", async ({ page }) => {
+test("model pill: the model control plus the panel button, popover lists providers and models with the current one checked", async ({ page }) => {
   await open(page);
   const right = page.getByTestId("head-right");
-  await expect(right.locator(":scope > *")).toHaveCount(1);
-  expect(await right.locator("button, a, [role=button], input, select").count()).toBe(1);
+  await expect(right.locator(":scope > *")).toHaveCount(2);
+  expect(await right.locator("button, a, [role=button], input, select").count()).toBe(2);
   const pill = page.getByTestId("model-pill");
   // the model's company mark sits before the name (Opus -> Claude)
   await expect(pill.locator('svg.model-ic[data-mark="claude"]')).toBeVisible();
@@ -168,8 +168,13 @@ test("settings opens and closes; theme Light sets data-theme; bot and provider p
   await expect(page.getByTestId("settings-view")).toHaveCount(0);
 });
 
-test("add bot: lists profiles with status; Connect re-reads bots.list; creation is available", async ({ page }) => {
-  // Show the default profile as not connected until something attaches it (a models.options read).
+test("add bot: lists the profiles not in the list; Add attaches one, re-reads bots.list and opens it", async ({ page }) => {
+  // Kami alone in the list; the default profile shows as not connected until something attaches it (models.options).
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem("addbot-e2e")) return;
+    sessionStorage.setItem("addbot-e2e", "1");
+    localStorage.setItem("omher.roster", JSON.stringify(["kami"]));
+  });
   let attached = false;
   await page.routeWebSocket(/127\.0\.0\.1/, (ws) => {
     const server = ws.connectToServer();
@@ -195,25 +200,21 @@ test("add bot: lists profiles with status; Connect re-reads bots.list; creation 
   await page.getByRole("button", { name: "Add a bot" }).click();
   const pop = page.getByTestId("addbot");
   await expect(pop).toBeVisible();
-  await expect(pop.getByText("Connect a Hermes profile")).toBeVisible();
-  for (const name of ["Kami", "Friren", "Hermes"]) await expect(pop.getByText(name, { exact: true })).toBeVisible();
-  await expect(page.getByTestId("addbot-kami")).toContainText("Connected");
-  const hermes = page.getByTestId("addbot-default");
-  await expect(hermes).toContainText("Not connected");
-  await expect(page.getByTestId("addbot-kami").getByRole("button", { name: "Connect" })).toHaveCount(0);
-  const create = page.getByTestId("addbot-create");
-  await expect(create).toBeEnabled();
+  await expect(pop.locator(".ab-h")).toHaveText("Add a bot");
+  for (const name of ["Friren", "Hermes", "OMH TUI"]) await expect(pop.getByText(name, { exact: true })).toBeVisible();
+  // Kami is already listed; Awaken also keeps its create-bot action.
+  await expect(page.getByTestId("addbot-kami")).toHaveCount(0);
+  await expect(page.getByTestId("addbot-create")).toBeEnabled();
+  await expect(page.getByTestId("addbot-default")).toContainText("Haiku 5");
 
-  await hermes.getByRole("button", { name: "Connect" }).click();
-  await expect(hermes).toContainText("Connected");
-  await expect(hermes.getByRole("button", { name: "Connect" })).toHaveCount(0);
-  expect((await callsOf("bots.list")).length).toBeGreaterThan(before);
-  // no file copied, no chat touched: only read ops were sent
+  await page.getByTestId("addbot-default").getByRole("button", { name: "Add" }).click();
+  await expect(pop).toHaveCount(0);
+  await expect(page.getByTestId("bot-default")).toHaveAttribute("aria-current", "true");
+  await expect.poll(() => attached).toBe(true);
+  await expect.poll(async () => (await callsOf("bots.list")).length).toBeGreaterThan(before);
+  // no file copied, no chat written: only reads were sent
   const ops = new Set(((await mock("mock.calls")).calls as { op: string }[]).map((c) => c.op));
   for (const op of ["chat.send", "chat.set_model"]) expect(ops.has(op)).toBe(false);
-
-  await page.keyboard.press("Escape");
-  await expect(pop).toHaveCount(0);
 });
 
 test("screenshots: settings in dark and light", async ({ page }) => {

@@ -18,6 +18,7 @@ from ..coding.paired_run_dispatch import (
     SharedResourceMode,
     plan_paired_run_dispatch,
 )
+from ..coding.paired_run_arm_home import API_MODES, PairedRunArmHomeError, validate_provider_config
 from ..coding.paired_run_execution import PairedRunExecutionReport
 from ..coding.paired_run_local_runner import (
     build_paired_run_local_boundary,
@@ -62,21 +63,32 @@ def cmd_coding_paired_run_dispatch(
             task_files = parse_task_file_arguments(
                 tuple(getattr(args, "task_file", ()))
             )
+            provider = str(getattr(args, "provider", "")).strip()
+            provider_config = validate_provider_config(
+                provider,
+                str(getattr(args, "provider_base_url", "") or ""),
+                str(getattr(args, "provider_api_mode", "") or ""),
+                str(getattr(args, "provider_key_env", "") or ""),
+            )
             runner_boundary = build_paired_run_local_boundary(
                 decision,
                 task_files,
                 PairedRunLocalRunnerConfig(
                     paths=_paths(args),
                     repo_root=Path(getattr(args, "repo", ".")).expanduser(),
-                    provider=str(getattr(args, "provider", "")),
+                    provider=provider,
                     hermes=str(getattr(args, "hermes", "hermes")),
                     reasoning=str(getattr(args, "reasoning", "medium")),
                     timeout_seconds=getattr(args, "timeout", 900.0),
+                    provider_config=provider_config,
                 ),
             )
-        except PairedRunLocalRunnerError as exc:
+        except (PairedRunLocalRunnerError, PairedRunArmHomeError) as exc:
             raise OmhError(str(exc)) from exc
-    report = runner_boundary(plan)
+    try:
+        report = runner_boundary(plan)
+    except PairedRunLocalRunnerError as exc:
+        raise OmhError(str(exc)) from exc
     _print_json({**_plan_payload(plan, config), "execution": report.metadata()})
     return 0
 
@@ -147,7 +159,7 @@ def _plan_payload(plan: PairedRunDispatchPlan, config: PairedRunDispatchConfig) 
         "isolation": _isolation_payload(plan, config.shared_resource_mode),
         "local_runner_boundary": (
             "explicit_confirmed_adapter; hermes reuses the sanctioned child boundary; "
-            "paired_run_decision/v1 contains no raw task content"
+            "paired_run_decision/v2 contains no raw task content"
         ),
         "cells": [
             {
@@ -197,7 +209,7 @@ def add_coding_paired_run_command(coding_sub: argparse._SubParsersAction[argpars
         "dispatch",
         help="Dispatch through the sanctioned Hermes adapter or a caller-injected extension; --dry-run launches nothing.",
     )
-    dispatch.add_argument("--decision", required=True, help="Path to a paired_run_decision/v1 document.")
+    dispatch.add_argument("--decision", required=True, help="Path to a paired_run_decision/v2 (or v1) document.")
     dispatch.add_argument("--dry-run", action="store_true", help="Build and print the inert plan without launching any runner.")
     dispatch.add_argument(
         "--confirm-dispatch",
@@ -219,6 +231,22 @@ def add_coding_paired_run_command(coding_sub: argparse._SubParsersAction[argpars
         "--provider",
         default="",
         help="Hermes provider for the sanctioned local adapter.",
+    )
+    dispatch.add_argument(
+        "--provider-base-url",
+        default="",
+        help="Custom provider API root (https, or http to a loopback host) written into each arm home.",
+    )
+    dispatch.add_argument(
+        "--provider-api-mode",
+        default="",
+        choices=("", *API_MODES),
+        help="Custom provider API mode.",
+    )
+    dispatch.add_argument(
+        "--provider-key-env",
+        default="",
+        help="NAME of the environment variable holding the custom provider key; the key is never written to disk.",
     )
     dispatch.add_argument(
         "--hermes",

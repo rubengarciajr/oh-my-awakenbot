@@ -1,6 +1,6 @@
-// Needs you: open asks across bots, expiry, interview answers, ⌘J order, pinned/hidden sidebar order.
+// Needs you: open asks across bots, expiry, interview answers, ⌘J order, the roster and pinned sidebar order.
 import { describe, expect, it } from "vitest";
-import { askFrom, askText, folderKey, initialState, reduce, selectAsks, selectSidebarBots, setChatRoute, type Action, type AppState } from "./store";
+import { askFrom, askOpen, askText, folderKey, initialState, reduce, seedRoster, selectAsks, selectSidebarBots, selectUnlisted, setChatRoute, type Action, type AppState } from "./store";
 import type { Bot, BridgeEvent } from "../lib/protocol";
 import { answerOf } from "../chat/cards/answers";
 import { nextAsk, shortcutFor } from "../app/shortcuts";
@@ -129,6 +129,51 @@ describe("SESSIONS chats in the one ask model", () => {
     expect(s.chats["agent:s1"]).toBeUndefined();
   });
 
+  // Claude Code 2.1.322 runs a subagent in the background: the turn ends (`result`), then the subagent asks
+  // (claude-13-late-ask.jsonl), or asks during the turn and the turn ends with the ask open (…-inside.jsonl). Claude
+  // Code waits for both answers; the subagent's row is still running.
+  const sub = (state: string, extra: Record<string, unknown> = {}): BridgeEvent =>
+    ({ event: "subagent", bot: "agent:s1", id: "toolu_1", agent: "claude", name: "general-purpose", goal: "Write gamma to c.txt", delegation: "claude-msg_1", index: 0, count: 1, state, ...extra }) as BridgeEvent;
+  const subAsk = (id: string): BridgeEvent => ({ ...approval("agent:s1", id), subagent: { id: "toolu_1", name: "Write gamma to c.txt" } }) as BridgeEvent;
+  const started = (): AppState =>
+    run(initialState(), [
+      { event: "turn.start", bot: "agent:s1" },
+      { event: "tool.start", bot: "agent:s1", tool_id: "toolu_1", name: "delegate_task", detail: "Write gamma to c.txt" },
+      sub("running"),
+      { event: "tool.end", bot: "agent:s1", tool_id: "toolu_1", name: "", ok: true, ms: 0 },
+    ]);
+  const open = (s: AppState) => selectAsks(s).filter((a) => a.bot === "agent:s1").map((a) => a.item.request_id);
+
+  it("a background subagent's ask that comes after its turn ended is open, in Needs you, until answered", () => {
+    let s = run(started(), [{ event: "turn.end", bot: "agent:s1", outcome: "done" }, subAsk("late")], T0 + 10_000);
+    expect(s.chats["agent:s1"].turn).toBeNull();
+    expect(open(s)).toEqual(["late"]);
+    const it = s.chats["agent:s1"].items.find((i) => i.kind === "approval")!;
+    expect(askOpen(s.chats["agent:s1"].items, it as never)).toBe(true);
+    s = reduce(s, { type: "approval.resolved", bot: "agent:s1", request_id: "late", choice: "once" });
+    expect(open(s)).toEqual([]);
+  });
+
+  it("a background subagent's ask left open at its turn's end stays open while the subagent runs", () => {
+    const s = run(started(), [subAsk("in"), { event: "turn.end", bot: "agent:s1", outcome: "done" }], T0 + 10_000);
+    expect(open(s)).toEqual(["in"]);
+    // the subagent ended (its notification): what it asked is no longer waited for
+    expect(open(run(s, [sub("done", { summary: "WROTE" })], T0 + 20_000))).toEqual([]);
+  });
+
+  it("an ask with no subagent still closes with its turn; a late one closes when the agent withdraws it", () => {
+    expect(open(run(initialState(), [{ event: "turn.start", bot: "agent:s1" }, approval("agent:s1", "a"), { event: "turn.end", bot: "agent:s1", outcome: "done" }]))).toEqual([]);
+    let s = run(started(), [{ event: "turn.end", bot: "agent:s1", outcome: "done" }, approval("agent:s1", "b")], T0 + 10_000);
+    expect(open(s)).toEqual(["b"]);
+    s = run(s, [{ event: "prompt.expired", bot: "agent:s1", request_id: "b", reason: "cancelled" }], T0 + 20_000);
+    expect(open(s)).toEqual([]);
+  });
+
+  it("the bot chat keeps its rule: an ask inside a turn closes with it, also after another turn", () => {
+    const s = run(initialState(), [{ event: "turn.start", bot: "kami" }, approval("kami", "k1"), { event: "turn.end", bot: "kami", outcome: "done" }, { event: "turn.start", bot: "kami" }]);
+    expect(selectAsks(s)).toEqual([]);
+  });
+
   it("⌘J walks bot and session asks in one age order", () => {
     const s = run(initialState(), [approval("friren", "a1"), approval("agent:s1", "req-1")]);
     const asks = selectAsks(s);
@@ -161,16 +206,37 @@ describe("⌘J", () => {
 });
 
 describe("sidebar order", () => {
-  it("pinned bots come first in pin order; hidden bots are left out", () => {
-    let s = reduce(initialState(), { type: "bots", bots: ["kami", "friren", "default"].map(bot) });
-    expect(selectSidebarBots(s).map((b) => b.name)).toEqual(["kami", "friren", "default"]);
-    s = reduce(s, { type: "ui.pin", bot: "default", on: true });
-    s = reduce(s, { type: "ui.pin", bot: "friren", on: true });
-    expect(selectSidebarBots(s).map((b) => b.name)).toEqual(["default", "friren", "kami"]);
-    s = reduce(s, { type: "ui.hide", bot: "friren", on: true });
+  it("lists only roster bots Hermes still reports, pinned first in pin order, then in the order they joined", () => {
+    let s = reduce(initialState(), { type: "bots", bots: ["kami", "friren", "default", "omh-tui"].map(bot) });
+    // no roster yet: nothing listed, everything offered under +
+    expect(selectSidebarBots(s)).toEqual([]);
+    expect(selectUnlisted(s).map((b) => b.name)).toEqual(["kami", "friren", "default", "omh-tui"]);
+    s = reduce(s, { type: "ui.roster", roster: ["default", "kami", "gone"] });
     expect(selectSidebarBots(s).map((b) => b.name)).toEqual(["default", "kami"]);
-    s = reduce(s, { type: "ui.pin", bot: "default", on: false });
-    s = reduce(s, { type: "ui.hide", bot: "friren", on: false });
-    expect(selectSidebarBots(s).map((b) => b.name)).toEqual(["friren", "kami", "default"]);
+    expect(selectUnlisted(s).map((b) => b.name)).toEqual(["friren", "omh-tui"]);
+    s = reduce(s, { type: "ui.roster", roster: ["default", "kami", "gone", "friren"] });
+    s = reduce(s, { type: "ui.pin", bot: "friren", on: true });
+    s = reduce(s, { type: "ui.pin", bot: "omh-tui", on: true }); // pinned but not listed: not shown
+    expect(selectSidebarBots(s).map((b) => b.name)).toEqual(["friren", "default", "kami"]);
+    s = reduce(s, { type: "ui.roster", roster: ["default", "kami"] });
+    expect(selectSidebarBots(s).map((b) => b.name)).toEqual(["default", "kami"]);
+  });
+});
+
+describe("the first roster", () => {
+  const bots = ["kami", "friren", "default", "omh-tui"].map(bot).map((b) => (b.name === "default" ? { ...b, is_default: true } : b));
+  it("fresh install: the default profile alone (else the first bot)", () => {
+    expect(seedRoster(bots, null, [], [])).toEqual(["default"]);
+    expect(seedRoster(bots.filter((b) => b.name !== "default"), null, [], [])).toEqual(["kami"]);
+    expect(seedRoster([], null, [], [])).toEqual([]);
+  });
+  it("a person who used omher: the bot saved for resume, then pinned bots that still exist; hidden ones never", () => {
+    expect(seedRoster(bots, "kami", [], [])).toEqual(["kami"]);
+    expect(seedRoster(bots, "kami", ["friren", "gone", "kami"], [])).toEqual(["kami", "friren"]);
+    expect(seedRoster(bots, "gone", ["omh-tui"], [])).toEqual(["omh-tui"]);
+    expect(seedRoster(bots, "kami", ["friren"], ["kami"])).toEqual(["friren"]);
+    // everything saved is hidden or gone: one bot, the default, as on a fresh install
+    expect(seedRoster(bots, "gone", [], [])).toEqual(["default"]);
+    expect(seedRoster(bots, "kami", [], ["kami", "default"])).toEqual(["friren"]);
   });
 });

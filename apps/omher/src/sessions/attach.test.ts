@@ -26,8 +26,8 @@ describe("attach helpers", () => {
   });
 
   it("a dropped path is typed bare when plain, else quoted for the shell", () => {
-    expect(shellQuote("/Users/you/.omher/session-files/s1/1-a.png")).toBe("/Users/you/.omher/session-files/s1/1-a.png");
-    expect(shellQuote("/Users/you/My Shots/1-it's.png")).toBe("'/Users/you/My Shots/1-it'\\''s.png'");
+    expect(shellQuote("/home/you/.omher/session-files/s1/1-a.png")).toBe("/home/you/.omher/session-files/s1/1-a.png");
+    expect(shellQuote("/home/you/My Shots/1-it's.png")).toBe("'/home/you/My Shots/1-it'\\''s.png'");
     expect(shellQuote("/a/$(rm -rf ~).png")).toBe("'/a/$(rm -rf ~).png'");
     expect(shellQuote("C:\\Users\\you\\.omher\\a b.png", true)).toBe('"C:\\Users\\you\\.omher\\a b.png"');
   });
@@ -86,11 +86,13 @@ const out = (name: string, text: string, kind: OutFile["kind"] = "file"): OutFil
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function running(ss: ReturnType<typeof setup>["ss"], agent: "claude" | "codex" | "omo" = "claude") {
+async function running(ss: ReturnType<typeof setup>["ss"], agent: "claude" | "codex" | "omo" = "claude", store?: ReturnType<typeof setup>["store"]) {
   await ss.loadAgents();
   const id = ss.draft(agent);
   ss.setDraft(id, { cwd: "/w/app" });
   await ss.start(id, "/status");
+  // the first answer ends (a message sent while a turn runs waits in omher, steer queue sessions)
+  for (let k = 0; k < 60 && store?.getState().chats[ss.chatKey(id)!]?.turn; k++) await wait(25);
   await wait(50);
   return id;
 }
@@ -98,7 +100,7 @@ async function running(ss: ReturnType<typeof setup>["ss"], agent: "claude" | "co
 describe("files in a session chat", () => {
   it("a running chat saves each file in the session's folder; pictures go as images, others by path", async () => {
     const { ss, store, calls } = setup();
-    const id = await running(ss);
+    const id = await running(ss, "claude", store);
     await ss.sendFiles(id, "what is this?", [out("shot.png", "PNGDATA", "image"), out("notes.txt", "a\nb\n")]);
     const saves = calls().filter((c) => c.op === "file.save");
     expect(saves.map((c) => [c.session, c.name, c.size])).toEqual([
@@ -106,10 +108,10 @@ describe("files in a session chat", () => {
       [id, "notes.txt", 4],
     ]);
     const send = calls().filter((c) => c.op === "chat.input").pop()!;
-    expect(send.input).toEqual({
+    expect(send.input).toMatchObject({
       kind: "send",
-      text: `what is this?\n\nAttached file (a copy Awaken Church saved; open it with your tools):\n- /Users/you/.omher/session-files/${id}/1-notes.txt`,
-      images: [`/Users/you/.omher/session-files/${id}/1-shot.png`],
+      text: `what is this?\n\nAttached file (a copy Awaken Church saved; open it with your tools):\n- /home/you/.omher/session-files/${id}/1-notes.txt`,
+      images: [`/home/you/.omher/session-files/${id}/1-shot.png`],
     });
     // the bubble shows the text as typed and both files
     const user = store.getState().chats[ss.chatKey(id)!].items.filter((i) => i.kind === "user").pop()!;
@@ -126,14 +128,14 @@ describe("files in a session chat", () => {
     const ops = calls().map((c) => c.op).filter((o) => o !== "reset");
     expect(ops.slice(0, 3)).toEqual(["file.save", "chat.start", "chat.input"]);
     const send = calls().find((c) => c.op === "chat.input")!;
-    expect(send.input).toEqual({ kind: "send", text: "", images: [`/Users/you/.omher/session-files/${id}/1-word.png`] });
+    expect(send.input).toEqual({ kind: "send", text: "", images: [`/home/you/.omher/session-files/${id}/1-word.png`], id: expect.stringMatching(/^local-/) });
     const user = store.getState().chats[ss.chatKey(id)!].items.find((i) => i.kind === "user")!;
     expect((user as { files: unknown[] }).files).toHaveLength(1);
   });
 
   it("a file that cannot be saved sends nothing, starts nothing and gives the error back", async () => {
-    const { ss, calls, g } = setup();
-    const id = await running(ss);
+    const { ss, calls, g, store } = setup();
+    const id = await running(ss, "claude", store);
     const before = calls().filter((c) => c.op === "chat.input").length;
     g.__omherFileSaveError = "disk full";
     await expect(ss.sendFiles(id, "x", [out("a.txt", "x")])).rejects.toThrow("Couldn't attach a.txt · disk full");
@@ -147,8 +149,8 @@ describe("files in a session chat", () => {
   });
 
   it("closing a session removes its saved files and forgets its sent-files record", async () => {
-    const { ss, calls, storage } = setup();
-    const id = await running(ss);
+    const { ss, calls, storage, store } = setup();
+    const id = await running(ss, "claude", store);
     await ss.sendFiles(id, "", [out("a.txt", "x")]);
     expect(JSON.parse(storage.get("omher.sessions.files")!)[id]).toBeTruthy();
     ss.close(id);
@@ -159,7 +161,7 @@ describe("files in a session chat", () => {
 
   it("after a restart a sent bubble shows its files again; folders of sessions that are gone are pruned", async () => {
     const first = setup();
-    const id = await running(first.ss);
+    const id = await running(first.ss, "claude", first.store);
     await first.ss.sendFiles(first.ss.getState().list[0].id, "look", [out("a.png", "PNG", "image")]);
     const book = first.storage.get("omher.sessions.files")!;
     const userMsg = first.store.getState().chats[first.ss.chatKey(id)!].messages.filter((m) => m.role === "user").pop()!;
@@ -167,7 +169,7 @@ describe("files in a session chat", () => {
     const again = setup();
     again.storage.set("omher.sessions.files", book);
     const host = again.host as unknown as { files: Map<string, Uint8Array> };
-    host.files.set(`/Users/you/.omher/session-files/${id}/1-a.png`, new Uint8Array([1, 2]));
+    host.files.set(`/home/you/.omher/session-files/${id}/1-a.png`, new Uint8Array([1, 2]));
     const fresh = createSessions(again.host, () => again.store);
     fresh.restore([{ id, agent: "claude", cwd: "/w/app", startedAt: 1, view: "chat", running: false, messages: [{ ...userMsg, id: userMsg.id }] }]);
     await wait(30);

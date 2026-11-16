@@ -12,8 +12,35 @@
 // at start and on every reset), mock.botMade {bot, kind: routine|plugin} (the bot made an automation or installed a
 // plugin from its chat: the bridge's poll would emit routines.update + routine.added, or plugin.added + plugins.update),
 // mock.offline {bot, on} (a bot's gateway down for the Automations / Plugins writes),
+// mock.restart {bot, outcome: "ok"|"refused"|"failed"|"slow", work?, line?} (what Hermes' restart answers next),
+// mock.pluginLoad {load: "live"|"reload"|"restart"|"failed"} (what the next plugin install / reload says),
+// mock.botStatus {bot, status} (a bot goes offline or online),
 // mock.manual {bot, on} (a message to that bot, or to its folder chats, starts a turn that runs no script: the test
-// drives it with mock.emit).
+// drives it with mock.emit),
+// mock.peerBots {bots} (the bots the mock "other computer" lists to peers.probe / peers.attach),
+// mock.watchRun {bot, name, kind: hit|silent, text?} (a bot-chat automation of `bot` ran, as the real bridge reports it:
+// a hit = `routine.ran {delivered}` then the Bot Chat turn whose `message` carries `watch`; silent = routines.update
+// only), mock.watchQueued {bot, name, n} (n automation answers landed in the bot's Bot Chat while omher was closed:
+// only its history grows, no event),
+// mock.watches {} (adds three channel watches to the automations, as `read_automations` reports collector jobs: friren's
+// "og-outage" ok on Slack, kami's "deploy-talk" paused on Discord, kami's "support-escalations" not readable),
+// SSH peers: peers.probe / peers.attach / peers.detach as the bridge's multiplexer answers them; an attached peer's
+// bots join bots.list as `<peer>:<name>` with a `host` field, and folder.open / bots.restart refuse them.
+// Threads under a bot: thread.create / thread.list / thread.open / thread.remove as the bridge answers them (a thread
+// is a folder entry with `thread: true`, so chat.send / interrupt / approval take `session=<thread>` as for a folder
+// chat); mock.threads {bot, threads: [{title, ago?}]} seeds a bot's threads (listed newest first).
+// The bot opens threads itself (bridge `split`): once the app read a bot's threads, its main-chat turns carry the
+// threads note (recorded as `hint: true` on mock.submits, the text left as typed; a thread's submit carries `session`); mock.answer {bot, text} queues a
+// recorded answer for the bot's next main-chat turn. Its top-level ```omher-thread``` blocks open a thread each (task
+// sent there, `thread.split` event), an ```omher-thread-route``` block to an open thread sends `thread.route`; the
+// `message` comes without the blocks, as the bridge sends it.
+// mock.steerMode {bot, mode: "accept"|"reject"} (what chat.steer answers while a turn runs, in the main chat or with
+// `session` a folder chat / thread; with no turn it is
+// always rejected, as Hermes' session.steer), mock.endTurn {bot, outcome?} (a manual turn ends, as Hermes ends it),
+// mock.steers (every steer the mock took),
+// mock.ready {bot, ok, signIn?} (what `bots.ready` answers for a bot: ok false = Hermes says it cannot answer; with
+// signIn: the strict check for that provider passes, as after `hermes auth add <id>`, and its models show in
+// models.options).
 import http from "node:http";
 import crypto from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
@@ -177,6 +204,25 @@ const AUTOMATION_SEED = [
     prompt: "On the 1st of each month, total last month's model and cloud spend by provider.", deliver: "bot-chat:default",
     created: -60 * 24 * 3600, repeat: { times: null, completed: 2 }, paused: true },
 ];
+// What `mock.watches` adds: channel watches (cron jobs whose script is `channel_watch_<watch>.py`).
+const WATCH_PROMPT = (cond) => `You judge new posts from a watched channel for one condition:\n${cond}.\n\nThe Script Output block holds the posts.`;
+const WATCH_SEED = [
+  { bot: "friren", id: "w0a1b2c3d4e5", name: "og-outage", schedule: "every 5m", next: 3 * MIN, last: -2 * MIN, status: "ok",
+    prompt: WATCH_PROMPT("posts about an outage or an error"), script: "channel_watch_og-outage.py", deliver: "bot-chat:friren",
+    created: -3 * DAY, repeat: { times: null, completed: 860 },
+    watch: { name: "og-outage", platform: "slack", channels: ["#og", "#og-alerts"], what: "posts about an outage or an error",
+      interval: "every 5m", last_alert: -40 * MIN, state: "ok", reason: null } },
+  { bot: "kami", id: "w1b2c3d4e5f6", name: "deploy-talk", schedule: "every 15m", next: null, last: -DAY, status: "ok",
+    prompt: WATCH_PROMPT("someone asks for a deploy"), script: "channel_watch_deploy-talk.py", deliver: "bot-chat:kami",
+    created: -9 * DAY, repeat: { times: null, completed: 410 }, paused: true,
+    watch: { name: "deploy-talk", platform: "discord", channels: ["#deploys"], what: "someone asks for a deploy",
+      interval: "every 15m", last_alert: null, state: "paused", reason: null } },
+  { bot: "kami", id: "w2c3d4e5f6a7", name: "support-escalations", schedule: "every 5m", next: 4 * MIN, last: -MIN, status: "ok",
+    prompt: WATCH_PROMPT("a customer asks to escalate"), script: "channel_watch_support-escalations.py", deliver: "bot-chat:kami",
+    created: -DAY, repeat: { times: null, completed: 12 },
+    watch: { name: "support-escalations", platform: "slack", channels: ["#support-vip"], what: "a customer asks to escalate",
+      interval: "every 5m", last_alert: null, state: "not_readable", reason: { code: "not_in_channel", channel: "#support-vip" } } },
+];
 // What `mock.botMade {kind: "routine"}` adds: a job the bot made from its chat.
 const BOT_MADE_JOB = { id: "a9c1e7f30d12", name: "CI watch on my PRs", schedule: "every 15m", next: 15 * MIN, last: null, status: null,
   prompt: "Check my open PRs in rlaope/oh-my-hermes. If a CI run failed since the last check, tell me which and why.",
@@ -188,6 +234,8 @@ const automationRow = (j) => ({
   last_run_at: j.last === null ? null : BOOT + j.last,
   last_status: j.status, enabled: !j.paused, paused: Boolean(j.paused), prompt: j.prompt, script: j.script ?? null, deliver: j.deliver,
   origin: j.origin ?? null, created_at: BOOT + j.created, last_error: j.error ?? null, repeat: j.repeat,
+  watch: j.watch ? { ...j.watch, state: j.paused ? "paused" : j.watch.state === "paused" ? "ok" : j.watch.state,
+    last_check: j.last === null ? null : BOOT + j.last, last_alert: j.watch.last_alert === null ? null : BOOT + j.watch.last_alert } : null,
 });
 
 // Plugins (plugins.*): Kami's installs as `plugin_row` returns them (4 of his own, one that needs a key it does not
@@ -197,7 +245,7 @@ const PLUGIN_SEED = [
     category: "platform", catalog_name: "homeassistant", tools: 4, hooks: 0, update_available: true, needs_env: [],
     description: "Home Assistant as a gateway platform: state changes come in as events, and the bot can switch devices and send notifications." },
   { name: "omh", key: "omh", title: "", version: "0.9.4", source: "user", enabled: true, tier: "user", category: "tools", catalog_name: null,
-    tools: 23, hooks: 6, update_available: false, needs_env: [], description: "oh-my-hermes for Hermes: dag runs, status and evidence gathering." },
+    tools: 23, hooks: 6, live_tools: 23, update_available: false, needs_env: [], description: "oh-my-hermes for Hermes: dag runs, status and evidence gathering." },
   { name: "elevenlabs-music", key: "elevenlabs-music", title: "ElevenLabs Music", version: "1.0.0", source: "user", enabled: false, tier: "official",
     category: "voice", catalog_name: "elevenlabs-music", tools: 8, hooks: 0, update_available: false, needs_env: ["ELEVENLABS_API_KEY"],
     description: "Describe a song or paste lyrics and the bot writes, generates and saves the track." },
@@ -437,6 +485,73 @@ function cliSeed() {
   return [live, ...runs];
 }
 
+// The mock SESSIONS Claude chat's own run (the MockHost's Claude session id, in the e2e folder): the agent's record
+// of the two subagents of "/subagents", as CliRuns reads it from the session's transcript. Its title is the agent's
+// ("Claude Code session"): the session panel shows the session row's name instead.
+// The session's own record as the bridge reads it from the transcript of the run the chat shows ("/subagents"),
+// the message sent `ago` seconds back: each subagent starts at its call and the first ends when its hand-back
+// reached the chat, after the time the chat's row says (3.7s, by Claude Code's own count, as the transcript's
+// stamps do); the second starts when its call reached the chat and takes 9.4s. With `hold` it is still out, as in
+// "/subagents hold". The same moments as host.ts's MockChat "/subagents" (0.6s and 0.17s after the send).
+/** The record OmO 5.1.56 wrote for the MockHost OmO session's two subagents, as CliRuns.omo reads it from
+ *  `senpi-task/tasks/st_*.json` (one run per session, lane `explore`, executor omo): the same run the chat shows for
+ *  "/subagents", each subagent ending when its result reached the chat (0.6 s and 1.4 s after the send) after the
+ *  time its row says (3.7 s and 9.4 s, OmO's `duration_ms`). The run is first start to last end, as the card's. */
+function omoSessionRun({ ago = 30 } = {}) {
+  const sent = now() - ago;
+  const sid = "01a1ce7b-1c30-7e45-8913-aa00b3b32296";
+  const node = (id, label, summary, ended, secs) => ({
+    id, label, deps: [], layer: 0, state: "done", model: "claude-haiku-5-5", provider: "anthropic", executor: "omo", lane: "explore",
+    started: ended - secs, ended, summary, attempts: [{ n: 1, outcome: "completed", started: ended - secs, ended }],
+  });
+  const nodes = [node("st_01a1ce7b", "Read a.txt first line", "alpha line", sent + 0.6, 3.7), node("st_01a1ce7c", "Count lines of b.txt", "3", sent + 1.4, 9.4)];
+  const started = Math.min(...nodes.map((n) => n.started));
+  const ended = Math.max(...nodes.map((n) => n.ended));
+  return {
+    id: `omo:${sid}`, kind: "session", agent: "omo", owner: { type: "session", id: sid }, title: "OmO session",
+    cwd: "/home/you/code/omher", state: "done", started, updated: ended, ended, nodes,
+  };
+}
+
+/** The records OmO 5.1.56 wrote for a foreground batch (omo-13-batch, tests/fixtures/omo-home), as CliRuns.omo reads
+ *  them: the MockHost OmO session's "/batch" run, ended `ago` seconds back. */
+function omoBatchRun({ ago = 2 } = {}) {
+  const end = now() - ago;
+  const sid = "01a1ce7b-1c30-7e45-8913-aa00b3b32296";
+  const node = (id, label, summary, started, ended) => ({
+    id, label, deps: [], layer: 0, state: "done", model: "claude-haiku-5-5", provider: "anthropic", executor: "omo",
+    started, ended, summary, attempts: [{ n: 1, outcome: "completed", started, ended }],
+  });
+  const nodes = [
+    node("st_01a1d076", "helper-a-first-line: read a.txt and reply FIRST_LINE: <first line>", "FIRST_LINE: alpha line", end - 28.851, end - 8.926),
+    node("st_01a1d077", "helper-b-line-count: count lines of a.txt and reply LINE_COUNT: <number>", "LINE_COUNT: 3", end - 28.594, end),
+  ];
+  return {
+    id: `omo:${sid}`, kind: "session", agent: "omo", owner: { type: "session", id: sid }, title: "OmO session",
+    cwd: "/home/you/code/omher", state: "done", started: end - 28.851, updated: end, ended: end, nodes,
+  };
+}
+
+function sessionRun({ ago = 30, hold = false } = {}) {
+  const sent = now() - ago;
+  const node = (id, label, summary, started, ended) => ({
+    id, label, deps: [], layer: 0, state: ended === undefined ? "running" : "done", model: "claude-fable-5-2", executor: "claude",
+    lane: "general-purpose", started, attempts: [{ n: 1, outcome: ended === undefined ? "open" : "completed", started, ...(ended === undefined ? {} : { ended }) }],
+    ...(ended === undefined ? {} : { summary, ended }),
+  });
+  const back = sent + 0.6;
+  const second = sent + 0.17;
+  const nodes = [node("sa-1", "Read a.txt first line", "alpha line", back - 3.7, back), node("sa-2", "Count lines of b.txt", "3", second, hold ? undefined : second + 9.4)];
+  const t = back - 3.7;
+  const end = second + 9.4;
+  return {
+    id: "claude:11111111-2222-4333-8444-555555555555", kind: "claude-task", agent: "claude",
+    owner: { type: "session", id: "11111111-2222-4333-8444-555555555555" }, title: "Claude Code session",
+    cwd: "/home/you/code/omher", state: hold ? "running" : "done", started: t, updated: hold ? now() : end,
+    ...(hold ? {} : { ended: end }), nodes,
+  };
+}
+
 // the bridge's run_summary: `failed` = open failures; a failure its repairs all fixed counts as `repaired`
 const runCounts = (r) => {
   const fixed = r.nodes.filter(
@@ -462,6 +577,14 @@ const PROVIDERS = [
   },
   { slug: "ollama", name: "Ollama", models: ["llama-4-maverick", "my-local-model"] },
 ];
+// bots.ready: Hermes' sentence for a bot with no AI account, and each sign-in's models as
+// models.options lists them once signed in (the first is an Opus tier, so the cost-safe pick is the second).
+const NOT_CONNECTED = "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, type `/login` in chat, or add a key with `hermes auth add <provider>`.";
+const SIGN_IN_MODELS = {
+  anthropic: { slug: "anthropic", name: "Anthropic", models: ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"] },
+  "openai-codex": { slug: "openai-codex", name: "ChatGPT or Codex Subscription", models: ["gpt-6-sol", "gpt-6-luna"] },
+  nous: { slug: "nous", name: "Nous Portal", models: ["anthropic/claude-fable-5.2", "moonshotai/kimi-k3"] },
+};
 // mock.providers {fixture: "long"}: the long catalogs of a real profile (Nous Portal ~60, OpenRouter ~60).
 const PROVIDERS_LONG = JSON.parse(readFileSync(new URL("./fixtures/providers-long.json", import.meta.url), "utf-8"));
 let providerFixture = "default";
@@ -472,13 +595,32 @@ const REASONING_LEVELS = ["none", "low", "medium", "high", "xhigh"];
 let calls = [];
 // What the bridge would hand Hermes' prompt.submit (the text after the reply-target block is added).
 let submits = [];
-let bots, history, models, turns, pending, idSeq, queues, avatars, folders, runs, cliRuns, cliTitles;
+let bots, history, models, turns, pending, idSeq, queues, avatars, folders, runs, cliRuns, cliTitles, peers, peerBots;
 // Automations and plugins: what the pages read and change (reset with everything else).
 let automations, plugins, inspected, offlineWrites;
+/** bots.restart: what the next restart answers per bot, which bot refused last (for "Restart anyway"). */
+let restartNext, restartRefused, pluginLoadNext;
+const STANDALONE = new Set(["omh-tui"]);
+const gatewayOf = (name) => (STANDALONE.has(name) ? name : "default");
+const gatewayBots = (gw) => Object.values(bots).filter((x) => gatewayOf(x.name) === gw);
+const restartTimers = new Set();
 // Every ask event sent, by request id: chat.open sends the ones still pending again, as the bridge does.
 let asked;
+let threadHistory = new Map(); // thread id -> its messages (as thread.open returns them)
+let threadsShown = new Set(); // bots whose threads the app read (thread.list): their main-chat turns carry the note
+let answers = {}; // bot -> recorded answers for its next main-chat turns (mock.answer)
+// Bots that have no Bot Chat yet (mock.noBotChat): chat.open with existing_only answers not_found for them.
+let noBotChat = new Set();
+/** Timers of subagents still reporting after their turn ended (cleared by mock.reset). */
+const subTimers = new Set();
 // Bots whose turns the test drives by hand (mock.manual).
 let manual;
+// chat.steer: per bot "accept" (default) or "reject" (mock.steerMode), and every steer taken (mock.steers)
+let steerMode = new Map();
+let steers = [];
+// Bots whose skills.list is empty (mock.noSkills).
+let noSkills;
+let notReady = new Map();
 
 // What each bot has done (bots.info): sessions per place, skills, routines.
 const INFO_SEED = {
@@ -500,6 +642,9 @@ const SKILL_SEED = [
   { name: "research", description: "Find sources, read them and answer with citations." },
   { name: "review", description: "Review a diff for correctness, tests and risk, worst first." },
 ];
+// Skills that arrive later (mock.skills): an install that registers oh-my-hermes' skills, listed from the
+// `after`-th skills.list read on (0 = at once). Cleared by mock.reset.
+let skillsLater = { add: [], after: 0 };
 
 // Subscription usage (usage.read). "default": Codex 73 % / 60 %, Claude limited (no %), Grok on PATH only.
 // "stale": the same Codex record after both reset times passed (no numbers). Switch with mock.usage {fixture}.
@@ -537,7 +682,7 @@ const USAGE = {
 const ACCT_CLIS = ["claude", "codex", "pi", "omp", "grok", "gemini"];
 const CPA_EMAILS = ["ana@example.com", "ben@example.com", "cho@example.com", "team@example.org"];
 const ACCT_INSTALLED = { claude: true, codex: true, pi: true, omp: false, grok: false, gemini: false };
-let acct, acctActive, acctLimited, acctLabels;
+let acct, acctActive, acctLimited, acctLabels, acctUsage;
 const ACCT_ID = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 function accountsList() {
   return {
@@ -551,7 +696,7 @@ function accountsList() {
           email: a.email ?? "",
           state,
           dir: a.id === "default" ? null : `/mock/.omher/accounts/${cli}/${a.id}`,
-          usage: cli === "codex" && a.id === "default" ? USAGE.default()[0] : null,
+          usage: acctUsage[`${cli}:${a.id}`] ?? (cli === "codex" && a.id === "default" ? USAGE.default()[0] : null),
           ...(limited ? { resets_at: limited } : {}),
           ...(cli === "claude" && a.email === "owner@example.com" ? { in_cpa: true } : {}),
         };
@@ -583,6 +728,7 @@ function acctFind(p) {
 
 function reset() {
   usageFixture = "default";
+  skillsLater = { add: [], after: 0 };
   providerFixture = "default";
   acct = {
     claude: [{ id: "default", label: "", email: "owner@example.com", logged_in: true }],
@@ -595,7 +741,10 @@ function reset() {
   acctActive = Object.fromEntries(ACCT_CLIS.map((c) => [c, "default"]));
   acctLimited = {};
   acctLabels = {};
+  acctUsage = {};
   for (const t of Object.values(turns ?? {})) t?.timers.forEach(clearTimeout);
+  for (const h of subTimers) clearTimeout(h);
+  subTimers.clear();
   bots = Object.fromEntries(BOT_SEED.map((b) => [b.name, { ...b }]));
   history = Object.fromEntries(
     Object.entries(HISTORY_SEED).map(([bot, rows]) => [
@@ -607,7 +756,10 @@ function reset() {
   turns = {};
   queues = {};
   avatars = {};
-  folders = new Map(); // folder chat id -> { bot, cwd, open }
+  threadHistory = new Map();
+  threadsShown = new Set();
+  answers = {};
+  folders = new Map(); // folder chat id -> { bot, cwd, open }; a thread also has thread, title, started, archived
   runs = runsSeed();
   cliRuns = cliSeed();
   cliTitles = new Map(); // `<agent>:<session id>` -> the title in the agent's own files (cli.title)
@@ -617,16 +769,54 @@ function reset() {
     default: structuredClone(PLUGIN_SEED.filter((x) => x.source === "bundled")), "omh-tui": structuredClone(PLUGIN_SEED.filter((x) => x.source === "bundled")) };
   inspected = new Map(); // `<bot>:<catalog name>` -> the sha plugins.inspect handed out
   offlineWrites = new Set();
+  restartNext = new Map();
+  for (const h of restartTimers) clearTimeout(h);
+  restartTimers.clear();
+  restartRefused = new Set();
+  pluginLoadNext = null;
   pending = new Map();
   asked = new Map();
+  noBotChat = new Set();
   manual = new Set();
+  steerMode = new Map();
+  steers = [];
+  noSkills = new Set();
+  notReady = new Map(); // bot -> the sign-in provider that now passes its strict check ("" = none)
   idSeq = 0;
   calls = [];
   submits = [];
+  peers = new Map(); // SSH peer id -> { label, host }
+  peerBots = null; // the mock other computer's bots (null: PEER_BOTS_SEED)
 }
 reset();
 
 const nextId = (p) => `${p}-${++idSeq}`;
+
+// ---- SSH peers (the bridge's multiplexer, BOUNDARY rule 31) ------------------------------------
+const PEER_URL = /^ws:\/\/127\.0\.0\.1:[0-9]{1,5}\/\?token=[0-9a-f]{32}$/;
+const PEER_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const PEER_HOST = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,31}@)?[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/;
+const PEER_BOTS_SEED = [
+  { name: "mini", display_name: "mini", is_default: false, model: "Sonnet 5.5", provider: "claude-proxy", description: "builds and nightly checks", status: "online", running: false, reasoning: "medium" },
+];
+const remoteKeys = () => Object.keys(bots).filter((n) => n.includes(":"));
+function dropPeer(id) {
+  for (const k of remoteKeys()) if (k.startsWith(`${id}:`)) {
+    delete bots[k];
+    delete history[k];
+    delete models[k];
+  }
+  peers.delete(id);
+}
+const remoteRefusal = (b, op) => {
+  const label = b.host?.label ?? "that computer";
+  if (op === "bots.restart") return new OpError("remote_bot", `omher does not restart Hermes on another computer. Restart it on ${label} itself.`);
+  return new OpError("remote_bot", `Folder chats run in a folder on this computer; ${label}'s bots run on another one.`);
+};
+const PEER_HINT =
+  '[omher] To connect a Hermes on another computer to this app over SSH, reply with one fenced block ```omher-peer {"host": "<ssh config alias or user@host>", "label": "<short name>"}``` (optional "port"). omher shows a Connect over SSH card and connects only when the user presses Connect; it uses key login only. If you do not know the host, ask.';
+const peerAsk = (text) =>
+  !text.includes("omher-peer") && /(?<![A-Za-z])ssh(?![A-Za-z])|맥\s*미니|mac\s*mini|다른\s*컴퓨터|another\s+(computer|machine)/i.test(text) && /hermes|헤르메스|bot|봇|붙|연결|connect|attach|add/i.test(text);
 const publicBot = ({ reasoning, ...b }) => ({
   ...b,
   model: models[b.name].model,
@@ -753,6 +943,19 @@ function needBot(p) {
   if (b.status === "offline") throw new OpError("bot_offline", `${p.bot} is offline`);
   return b;
 }
+/** A bot by name whatever its status (an offline bot can be started). */
+function needBotAny(p) {
+  if (typeof p.bot !== "string" || !p.bot) throw new OpError("bad_request", "missing bot");
+  const b = bots[p.bot];
+  if (!b) throw new OpError("unknown_bot", `no bot named ${p.bot}`);
+  return b;
+}
+function needThread(p, b) {
+  if (typeof p.thread !== "string" || !p.thread) throw new OpError("bad_request", "missing thread");
+  const f = folders.get(p.thread);
+  if (!f || !f.thread || f.archived || f.bot !== b.name) throw new OpError("not_found", "no such thread");
+  return f;
+}
 function needFolder(p, b) {
   const f = typeof p.session === "string" ? folders.get(p.session) : undefined;
   if (!f || !f.open || f.bot !== b.name) throw new OpError("not_found", "no such folder chat");
@@ -814,6 +1017,88 @@ const awayFor = (bot) =>
     .sort((x, y) => y.last_active - x.last_active)
     .slice(0, 20);
 
+// runs.node_session (harness lane): one node's session as a chat. The demo plan's `contrast` node is a Hermes child
+// (DeepSeek) with a later steer and its own grandchild; `code-colors` is a Codex fanout session; `page-styles` a
+// Claude Code one. A subagent card's `[dag:codex-coexist-live/…]` goal reads the same Hermes child shape. Thinking
+// never appears; a planted token shows masked the way the bridge masks it.
+let nsClock = 0;
+function nsStep(tool, args, result, ok = true) {
+  nsClock += 3 + (nsClock % 7);
+  return { type: "step", tool, input: JSON.stringify(args, null, 2), result, ok, ts: now() - 300 + nsClock };
+}
+const NS_SESSIONS = {
+  "hermes:contrast": () => ({
+    kind: "hermes", ref: "hermes:20261110_092410_c0ffee", model: "deepseek/deepseek-v4.1-flash", provider: "deepseek",
+    parent: "Kami", title: "Contrast check", state: "running", started: now() - 290,
+    items: [
+      { type: "user", text: "Contrast check\n\nCheck every text colour in docs/theme.css against its background in dark and light; WCAG AA. Report the failing pairs." },
+      { type: "assistant", text: "Reading the tokens first, then I will measure each pair." },
+      nsStep("read_file", { path: "docs/theme.css" }, "1|:root {\n2|  --fg: #1b1b1f;\n3|  --muted: #8a8a93;"),
+      nsStep("terminal", { command: "node scripts/contrast.mjs docs/theme.css" }, '{"output": "muted on bg (dark): 3.9:1  FAIL\\nfg on bg (dark): 14.2:1 ok", "exit_code": 0}'),
+      { type: "user", text: "Also check the code block colours." },
+      nsStep("delegate_task", { goal: "Code block palette contrast" }, '{"status": "completed"}'),
+      { type: "child", ref: "hermes:20261110_092530_beef01", kind: "hermes", goal: "Code block palette contrast", state: "done",
+        summary: "All 9 code colours pass AA on both themes.", model: "z-ai/glm-5.3-ultrafast", provider: "z-ai", started: now() - 160, ended: now() - 120 },
+      nsStep("terminal", { command: "export TOKEN=sk-•••; node scripts/contrast.mjs --code" }, '{"output": "9/9 ok", "exit_code": 0}'),
+      { type: "assistant", text: "**One pair fails AA:** `--muted` on the dark background is 3.9:1.\n\n- Raise `--muted` to `#a0a0aa` (4.6:1).\n- Code block colours: all 9 pass." },
+    ],
+  }),
+  "hermes:20261110_092530_beef01": () => ({
+    kind: "hermes", ref: "hermes:20261110_092530_beef01", model: "z-ai/glm-5.3-ultrafast", provider: "z-ai", parent: "Kami",
+    title: "Code block palette contrast", state: "done", started: now() - 160, ended: now() - 120,
+    items: [
+      { type: "user", text: "Code block palette contrast" },
+      nsStep("search_files", { pattern: "--code-" }, "docs/theme.css:40: --code-keyword: #c678dd"),
+      { type: "assistant", text: "All 9 code colours pass AA on both themes." },
+    ],
+  }),
+  "codex:code-colors": () => ({
+    kind: "codex", ref: "codex:01a1dd00-0000-7000-8000-00000000c0de", model: "gpt-6.1-sol", provider: "openai", parent: "Kami",
+    title: "Code block colors", state: "running", started: now() - 235, cwd: "/w/web-app-code-colors",
+    items: [
+      { type: "user", text: "Code block colors: give code blocks a dark palette that matches the new tokens. Open a draft PR." },
+      nsStep("exec_command", { cmd: "rg -n \"pre code\" docs/" }, "docs/theme.css:88: pre code {"),
+      nsStep("apply_patch", { patch: "*** Update File: docs/theme.css\n@@\n-pre code { color: #333 }\n+pre code { color: var(--code-fg) }" }, "Success. Updated 1 file."),
+      nsStep("exec_command", { cmd: "pnpm test --run" }, "Process exited with code 0\n12 passed"),
+      nsStep("exec_command", { cmd: "gh pr create --draft --title \"docs: code block palette\"" }, "https://github.com/rlaope/oh-my-hermes/pull/2360"),
+      { type: "assistant", text: "Code blocks now use the dark palette. Tests pass. Draft PR #2360 is open." },
+    ],
+  }),
+  "claude:page-styles": () => ({
+    kind: "claude", ref: "claude:-w-web-app/aa11bb22-0000-4000-8000-0000000000aa", model: "claude-opus-5-5", parent: "Kami",
+    title: "Page styles", state: "running", started: now() - 240,
+    items: [
+      { type: "user", text: "Page styles: apply the tokens to every docs page." },
+      nsStep("Bash", { command: "ls docs/pages" }, "index.md\ninstall.md"),
+      { type: "assistant", text: "Both pages use the tokens now." },
+    ],
+  }),
+};
+function nodeSessionOp(p) {
+  nsClock = 0;
+  const b = needBot(p);
+  const pick = (k) => (NS_SESSIONS[k] ? { session: NS_SESSIONS[k]() } : { session: null });
+  if (typeof p.ref === "string") {
+    if (!/^(hermes|claude|claude-sub|codex):[A-Za-z0-9_.:/@-]{1,300}$/.test(p.ref) || p.ref.includes("..")) throw new OpError("bad_request", "bad session ref");
+    return pick(p.ref);
+  }
+  if (typeof p.goal === "string") {
+    const m = /^\[dag:([a-z0-9-]+)\/([a-z0-9-]+)\]$/.exec(p.goal.trim());
+    if (m && m[1] === "codex-coexist-live") return pick("hermes:contrast");
+    return { session: null };
+  }
+  const run = needStr(p, "run");
+  const node = needStr(p, "node");
+  const r = (runs[b.name] ?? []).find((x) => x.id === run);
+  if (!r) throw new OpError("not_found", `no run ${run} for ${b.name}`);
+  const n = r.nodes.find((x) => x.id === node);
+  if (!n) throw new OpError("not_found", `no node ${node} in ${run}`);
+  if (n.executor === "codex") return pick(`codex:${node}`);
+  if (n.executor === "claude") return pick(`claude:${node}`);
+  if (n.executor) return { session: null, why: "no_cli_session", executor: n.executor };
+  return pick(`hermes:${node}`);
+}
+
 const OPS = {
   hello: () => ({ bridge: "mock", version: "0.1.0", hermes: { home: "/mock/.hermes", version: "mock" } }),
   "bots.list": () => ({ bots: Object.values(bots).map(publicBot) }),
@@ -828,8 +1113,44 @@ const OPS = {
     broadcast({ event: "bots.update", bot: p.name });
     return { bot: publicBot(bots[p.name]) };
   },
+  "peers.probe": (p) => {
+    if (typeof p.url !== "string" || !PEER_URL.test(p.url)) throw new OpError("bad_request", "url must be the forwarded loopback address");
+    return {
+      version: "0.2.8",
+      hermes: { home: "/home/sionic/.hermes", version: "0.23.1" },
+      bots: (peerBots ?? PEER_BOTS_SEED).map(({ name, display_name, model, provider, status }) => ({ name, display_name, model, provider, status })),
+    };
+  },
+  "peers.attach": (p) => {
+    if (typeof p.peer !== "string" || !PEER_ID.test(p.peer)) throw new OpError("bad_request", "peer must be a peer id");
+    if (typeof p.label !== "string" || !p.label.trim() || p.label.length > 40) throw new OpError("bad_request", "label must be 1 to 40 characters");
+    if (typeof p.host !== "string" || !PEER_HOST.test(p.host)) throw new OpError("bad_request", "host must be an ssh alias or user@host");
+    if (typeof p.url !== "string" || !PEER_URL.test(p.url)) throw new OpError("bad_request", "url must be the forwarded loopback address");
+    dropPeer(p.peer);
+    peers.set(p.peer, { label: p.label.trim(), host: p.host });
+    const host = { kind: "ssh", peer: p.peer, label: p.label.trim(), host: p.host };
+    for (const r of peerBots ?? PEER_BOTS_SEED) {
+      const key = `${p.peer}:${r.name}`;
+      bots[key] = { ...r, name: key, host };
+      history[key] = [
+        { id: `seed-${key}-0`, role: "user", text: "Did the nightly build pass?", ts: BOOT - 3600 },
+        { id: `seed-${key}-1`, role: "assistant", text: "Yes. All 412 tests passed on the build box; the artifacts are in `dist/`.", ts: BOOT - 3540 },
+      ];
+      models[key] = { model: r.model, provider: r.provider, reasoning: r.reasoning };
+    }
+    setTimeout(() => broadcast({ event: "bots.update", bot: "" }), 0);
+    return { peer: p.peer, bots: remoteKeys().filter((k) => k.startsWith(`${p.peer}:`)).map((k) => publicBot(bots[k])) };
+  },
+  "peers.detach": (p) => {
+    if (typeof p.peer !== "string" || !PEER_ID.test(p.peer)) throw new OpError("bad_request", "peer must be a peer id");
+    dropPeer(p.peer);
+    setTimeout(() => broadcast({ event: "bots.update", bot: "" }), 0);
+    return {};
+  },
   "chat.open": (p) => {
     const b = needBot(p);
+    // existing_only: a bot outside the sidebar list asked for its waiting prompts; one with no Bot Chat makes none
+    if (p.existing_only === true && noBotChat.has(b.name)) throw new OpError("not_found", "this bot has no Bot Chat yet");
     const m = models[b.name];
     // asks still waiting on the person go out again after the reply (the bridge's replay)
     const waiting = [...pending.keys()].map((id) => asked.get(id)).filter((e) => e && e.bot === b.name && !e.session);
@@ -845,12 +1166,63 @@ const OPS = {
   },
   "folder.open": (p) => {
     const b = needBot(p);
+    if (b.host) throw remoteRefusal(b, "folder.open");
     const cwd = needStr(p, "cwd");
     if (!cwd.startsWith("/") && !/^[A-Za-z]:\\/.test(cwd)) throw new OpError("bad_request", "cwd must be an existing folder");
     const session = nextId("f");
     folders.set(session, { bot: b.name, cwd, open: true });
     const m = models[b.name];
     return { session, cwd, model: m.model, provider: m.provider, reasoning: m.reasoning };
+  },
+  "thread.create": (p) => {
+    const b = needBot(p);
+    if (b.host) throw new OpError("remote_bot", `Threads run on this computer; ${b.host.label}'s bots run on another one.`);
+    if (p.title !== undefined && (typeof p.title !== "string" || !p.title.trim())) throw new OpError("bad_request", "title must be text");
+    const old = typeof p.key === "string" ? [...folders.entries()].find(([, f]) => f.thread && f.key === `${b.name}:${p.key}`) : null;
+    const thread = old ? old[0] : nextId("stored-th");
+    if (!old) {
+      folders.set(thread, { bot: b.name, cwd: p.cwd ?? "/home/me", open: true, thread: true, title: p.title?.trim() ?? "", started: now(), archived: false,
+        key: typeof p.key === "string" ? `${b.name}:${p.key}` : null });
+      threadHistory.set(thread, []);
+      setTimeout(() => broadcast({ event: "thread.added", bot: b.name, thread, title: p.title?.trim() ?? "" }), 0);
+    }
+    const f = folders.get(thread);
+    const m = models[b.name];
+    return { thread, title: f.title, cwd: f.cwd, started_at: f.started, running: false, needs: false, message_count: 0, preview: "",
+      model: m.model, provider: m.provider, reasoning: m.reasoning };
+  },
+  "thread.list": (p) => {
+    const b = needBot(p);
+    threadsShown.add(b.name);
+    const threads = [...folders.entries()]
+      .filter(([, f]) => f.thread && f.bot === b.name && !f.archived)
+      .map(([thread, f]) => ({ thread, title: f.title, cwd: f.listedCwd ?? f.cwd, started_at: f.started, running: Boolean(turns[folderTurnKey(b.name, thread)]),
+        needs: [...pending.values()].some((w) => w.bot === folderTurnKey(b.name, thread)), message_count: threadHistory.get(thread)?.length ?? 0, preview: "" }))
+      .sort((x, y) => y.started_at - x.started_at);
+    return { threads };
+  },
+  "thread.open": (p) => {
+    const b = needBot(p);
+    const f = needThread(p, b);
+    const m = models[b.name];
+    return { thread: p.thread, session_id: p.thread, title: f.title, cwd: f.cwd, messages: threadHistory.get(p.thread) ?? [],
+      running: Boolean(turns[folderTurnKey(b.name, p.thread)]), model: m.model, provider: m.provider, reasoning: m.reasoning };
+  },
+  "thread.remove": (p) => {
+    const b = needBot(p);
+    if (p.thread === `main-${b.name}`) throw new OpError("bad_request", "that is the bot's main chat, not a thread");
+    const f = needThread(p, b);
+    const key = folderTurnKey(b.name, p.thread);
+    for (const [id, w] of pending) if (w.bot === key) {
+      pending.delete(id);
+      clearTimeout(w.timer);
+      ev(key, "prompt.expired", { request_id: id, reason: "cancelled" });
+    }
+    if (turns[key]) endTurn(key, "interrupted", { drop: true });
+    f.archived = true;
+    f.open = false;
+    setTimeout(() => broadcast({ event: "thread.removed", bot: b.name, thread: p.thread }), 0);
+    return { thread: p.thread, archived: true };
   },
   "folder.close": (p) => {
     needBot(p);
@@ -878,19 +1250,40 @@ const OPS = {
         `${text.trimEnd()}\n\n[omher] Reply target: ${seed.target} (${kind} "${label}"). Post there only if the user asked; ` +
         `use your own messaging tool or \`hermes send --to ${seed.target}\`.`;
     }
-    submits.push({ bot: b.name, session_id: `main-${b.name}`, text: submitted });
+    if (p.reply_to === undefined && peerAsk(text)) submitted = `${text.trimEnd()}\n\n${PEER_HINT}`;
+    submits.push({ bot: b.name, session_id: `main-${b.name}`, text: submitted, ...(p.session !== undefined ? { session: p.session } : threadsShown.has(b.name) ? { hint: true } : {}) });
     const input_id = nextId("input");
     if (p.session !== undefined) {
       const f = needFolder(p, b);
       const key = folderTurnKey(b.name, p.session);
-      if (turns[key]) throw new OpError("busy", "a turn is running");
-      startTurn(key, text, f);
+      if (turns[key] && p.queued !== true) throw new OpError("busy", "a turn is running");
+      if (f.thread) {
+        threadHistory.get(p.session)?.push({ id: nextId("u"), role: "user", text, ts: now() });
+        if (!f.title) {
+          const one = text.split(/\s+/).filter(Boolean).join(" ");
+          f.title = one.length <= 40 ? one : `${one.slice(0, 39).trimEnd()}…`;
+          setTimeout(() => broadcast({ event: "session.title", bot: b.name, session: p.session, title: f.title }), 0);
+        }
+      }
+      // a message the app held (steer queue, `queued`) waits behind a still-running turn, as Hermes' own FIFO does
+      if (turns[key]) (queues[key] ??= []).push(text);
+      else startTurn(key, text, f);
       return { input_id };
     }
     history[b.name].push({ id: nextId("u"), role: "user", text, ts: now(), ...(reply_to ? { reply_to } : {}) });
     if (turns[b.name]) (queues[b.name] ??= []).push(text);
     else startTurn(b.name, text);
     return { input_id };
+  },
+  // Hermes' session.steer on the main chat or a folder chat / thread the bridge made (any other id: not_found):
+  // taken while that chat's turn runs, else rejected; never sent another way
+  "chat.steer": (p) => {
+    const b = needBot(p);
+    const text = needStr(p, "text");
+    const key = p.session !== undefined ? (needFolder(p, b), folderTurnKey(b.name, p.session)) : b.name;
+    if (!turns[key] || steerMode.get(b.name) === "reject") return { status: "rejected" };
+    steers.push({ bot: b.name, text, ...(p.session !== undefined ? { session: p.session } : {}) });
+    return { status: "queued" };
   },
   "chat.interrupt": (p) => {
     const b = needBot(p);
@@ -987,7 +1380,12 @@ const OPS = {
       routines: (ROUTINE_SEED[b.name] ?? []).length,
     };
   },
-  "skills.list": (p) => (needBot(p), { skills: SKILL_SEED.map((x) => ({ ...x })) }),
+  "skills.list": (p) => {
+    needBot(p);
+    if (noSkills.has(p.bot)) return { skills: [] };
+    const late = skillsLater.after-- <= 0 ? skillsLater.add : [];
+    return { skills: [...SKILL_SEED, ...late].sort((a, b) => a.name.localeCompare(b.name)).map((x) => ({ ...x })) };
+  },
   "links.places": (p) => ({ places: structuredClone(LINK_PLACES[needBot(p).name] ?? { slack: {}, discord: {} }) }),
   "panel.terminal": (p) => ({
     runs: (PANEL_RUNS[needBot(p).name] ?? []).map(({ ago, ...r }) => ({ ...r, session_id: "s-" + r.id, ts: now() - ago })),
@@ -1038,7 +1436,7 @@ const OPS = {
       .sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.updated - a.updated),
   }),
   "runs.cli": (p) => {
-    const AGENTS = ["claude", "codex", "pi", "omp", "grok"];
+    const AGENTS = ["claude", "codex", "omo", "pi", "omp", "grok"];
     if (p.agent !== undefined && !AGENTS.includes(p.agent)) throw new OpError("bad_request", `agent must be one of ${AGENTS.join(", ")}`);
     if (p.cwd !== undefined && (typeof p.cwd !== "string" || !p.cwd)) throw new OpError("bad_request", "cwd must be a folder path");
     if (p.since !== undefined && typeof p.since !== "number") throw new OpError("bad_request", "since must be epoch seconds");
@@ -1072,11 +1470,12 @@ const OPS = {
       throw new OpError("bad_request", "session must be the agent's session id");
     return { title: cliTitles.get(`${p.agent}:${p.session}`) ?? "" };
   },
+  "runs.node_session": (p) => nodeSessionOp(p),
   "runs.get": (p) => {
-    const b = needBot(p);
     const id = needStr(p, "run");
     const cli = cliRuns.find((r) => r.id === id);
     if (cli) return { run: cli, handoffs: {} };
+    const b = needBot(p);
     const run = (runs[b.name] ?? []).find((r) => r.id === id);
     if (!run) throw new OpError("not_found", `no run ${id} for ${b.name}`);
     return { run, handoffs: HANDOFFS[id] ?? {} };
@@ -1147,7 +1546,10 @@ const OPS = {
     list.push({ name: entry.name, key: entry.name, title: entry.title === entry.name ? "" : entry.title, version: entry.version, source: "user",
       enabled: entry.requires_env.length === 0, tier: entry.tier, category: entry.category, catalog_name: entry.name, tools: entry.tools.length,
       hooks: entry.hooks.length, update_available: false, needs_env: [...entry.requires_env] });
-    return { name: entry.name, enabled: entry.requires_env.length === 0, restart_required: entry.hooks.length > 0, warnings: [], missing_env: [...entry.requires_env] };
+    const load = pluginLoadNext ?? "live";
+    pluginLoadNext = null;
+    return { name: entry.name, enabled: entry.requires_env.length === 0, restart_required: load !== "live", load, restart_bot: "default",
+      warnings: [], missing_env: [...entry.requires_env] };
   },
   "plugins.toggle": (p) => {
     const row = pluginOf(p, "key");
@@ -1167,8 +1569,23 @@ const OPS = {
     plugins[p.bot] = plugins[p.bot].filter((x) => x !== row);
     return { name: row.name };
   },
+  "bots.ready": (p) => {
+    const b = needBot(p);
+    if (p.provider !== undefined && !(typeof p.provider === "string" && /^[a-z0-9][a-z0-9_-]{0,40}$/.test(p.provider))) throw new OpError("bad_request", "provider must be a Hermes provider id");
+    if (!notReady.has(b.name)) return { ok: true, provider: models[b.name].provider, model: models[b.name].model, error: "" };
+    const signed = notReady.get(b.name);
+    // the strict check for the provider the person signed in to passes; the bot's own check passes once its chat
+    // runs on that provider (chat.set_model), as with `hermes auth add anthropic` and no model in config
+    if (p.provider) return signed === p.provider ? { ok: true, provider: p.provider, model: "z-ai/glm-5.3", error: "" } : { ok: false, provider: "", model: "", error: `No usable credentials found for ${p.provider}.` };
+    if (signed && models[b.name].provider === signed) return { ok: true, provider: signed, model: models[b.name].model, error: "" };
+    return { ok: false, provider: "", model: "", error: NOT_CONNECTED };
+  },
   "models.options": (p) => {
     const b = needBot(p);
+    const signed = notReady.get(b.name);
+    if (signed && SIGN_IN_MODELS[signed]) {
+      return { providers: [...PROVIDERS, SIGN_IN_MODELS[signed]], current: { ...models[b.name] }, reasoning_levels: REASONING_LEVELS };
+    }
     if (providerFixture === "long") {
       return { providers: PROVIDERS_LONG.providers, current: { ...models[b.name], ...PROVIDERS_LONG.current }, reasoning_levels: REASONING_LEVELS };
     }
@@ -1182,7 +1599,7 @@ const OPS = {
       return { model: p.model, provider: p.provider ?? models[b.name].provider, reasoning: models[b.name].reasoning };
     }
     const cur = models[b.name];
-    if (p.provider !== undefined && !PROVIDERS.some((x) => x.slug === p.provider)) throw new OpError("bad_request", `unknown provider ${p.provider}`);
+    if (p.provider !== undefined && !PROVIDERS.some((x) => x.slug === p.provider) && !(notReady.get(b.name) === p.provider && SIGN_IN_MODELS[p.provider])) throw new OpError("bad_request", `unknown provider ${p.provider}`);
     if (p.reasoning !== undefined && !REASONING_LEVELS.includes(p.reasoning)) throw new OpError("bad_request", `unknown reasoning level ${p.reasoning}`);
     if (p.model !== undefined && typeof p.model !== "string") throw new OpError("bad_request", "model must be a string");
     models[b.name] = {
@@ -1241,6 +1658,17 @@ const OPS = {
     return {};
   },
   // ---- test control (not part of the protocol)
+  // a bot whose gateway runs without oh-my-hermes' tools yet (installed while it ran): its omh row, enabled, 0 live
+  "mock.omhUnloaded": (p) => {
+    const b = needBot(p);
+    const omh = PLUGIN_SEED.find((x) => x.name === "omh");
+    plugins[b.name] = [...(plugins[b.name] ?? []).filter((x) => x.name !== "omh"), { ...structuredClone(omh), live_tools: 0 }];
+    return {};
+  },
+  "mock.skills": (p) => {
+    skillsLater = { add: Array.isArray(p.add) ? p.add : [], after: Number(p.after) || 0 };
+    return {};
+  },
   "mock.usage": (p) => {
     if (!(p.fixture in USAGE)) throw new OpError("bad_request", "unknown usage fixture");
     usageFixture = p.fixture;
@@ -1254,6 +1682,15 @@ const OPS = {
   "mock.accounts": (p) => {
     const cli = typeof p.cli === "string" ? p.cli : "codex";
     if (typeof p.limit === "string") acctLimited[`${cli}:${p.limit}`] = now() + 2 * 3600;
+    // usage {id, windows: [{label, used_percent?, resets_in_min?}]}: that account's own usage record
+    if (p.usage && typeof p.usage === "object") {
+      const windows = (p.usage.windows ?? []).map((w) => ({
+        label: w.label,
+        ...(typeof w.used_percent === "number" ? { used_percent: w.used_percent } : {}),
+        ...(typeof w.resets_in_min === "number" ? { resets_at: now() + w.resets_in_min * MIN } : {}),
+      }));
+      acctUsage[`${cli}:${p.usage.id}`] = { id: cli, state: "ok", source_mtime: now() - 60, windows };
+    }
     if (p.signed_in && typeof p.signed_in === "object") {
       const a = acct[cli]?.find((x) => x.id === p.signed_in.id);
       if (a) Object.assign(a, { logged_in: true, email: p.signed_in.email ?? "" });
@@ -1285,6 +1722,81 @@ const OPS = {
     }
     throw new OpError("bad_request", "kind is routine or plugin");
   },
+  // Hermes' own restart of one bot (the real bridge runs `hermes -p <bot> gateway restart`); the mock answers what
+  // mock.restart set, then "attaches again" after a short while (bot.restarted)
+  // which gateway process serves a bot: OMH TUI runs its own (standalone, as on the owner's Mac); the host gateway
+  // (default) serves the others
+  "bots.restart_scope": (p) => {
+    const b = needBotAny(p);
+    const gw = gatewayOf(b.name);
+    return { gateway: gw, bots: gatewayBots(gw).map((x) => ({ name: x.name, display_name: x.display_name })) };
+  },
+  "bots.restart": (p) => {
+    if (needBotAny(p).host) throw remoteRefusal(needBotAny(p), "bots.restart");
+    const b = needBotAny(p);
+    const interrupt = p.interrupt === true;
+    const gw = gatewayOf(b.name);
+    if (interrupt && !restartRefused.has(gw)) throw new OpError("bad_request", "Restart anyway follows a refusal for live work");
+    const next = restartNext.get(b.name) ?? { outcome: "ok" };
+    restartRefused.delete(gw);
+    if (next.outcome === "refused" && !interrupt) {
+      restartRefused.add(gw);
+      // the real bridge reads Hermes' unit lines into these plain parts (work_unit): no ids, pids or brackets
+      return { outcome: "refused", work: next.work ?? [{ kind: "chat", name: null, secs: 180, bot: b.name }] };
+    }
+    restartNext.delete(b.name);
+    if (next.outcome === "failed") return { outcome: "failed", line: next.line ?? "Gateway service restart failed." };
+    const takes = gatewayBots(gatewayOf(b.name));
+    const back = () => {
+      for (const x of takes) {
+        x.status = "online";
+        x.running = false;
+        broadcast({ event: "bot.status", bot: x.name, status: "online", running: false });
+        broadcast({ event: "bot.restarted", bot: x.name, ok: true });
+      }
+    };
+    // "slow" holds the restarting state until the test calls mock.restartDone
+    if (next.outcome === "slow") restartNext.set(b.name, { outcome: "held", back });
+    else {
+      const h = setTimeout(() => {
+        restartTimers.delete(h);
+        back();
+      }, 600);
+      restartTimers.add(h);
+    }
+    return { outcome: "ok", bots: takes.map((x) => x.name) };
+  },
+  "plugins.reload": (p) => {
+    const b = needBot(p);
+    const load = pluginLoadNext ?? "live";
+    pluginLoadNext = null;
+    if (load === "failed") return { load: "failed", line: `${b.display_name}'s Hermes did not answer.` };
+    return { load: load === "reload" ? "live" : load, missing: load === "restart" ? ["numpy"] : [], restart_bot: "default" };
+  },
+  "mock.restart": (p) => {
+    needStr(p, "bot");
+    restartNext.set(p.bot, { outcome: p.outcome, work: p.work, line: p.line });
+    return {};
+  },
+  "mock.restartDone": (p) => {
+    const held = restartNext.get(needStr(p, "bot"));
+    if (held?.back) {
+      restartNext.delete(p.bot);
+      held.back();
+    }
+    return {};
+  },
+  "mock.pluginLoad": (p) => {
+    pluginLoadNext = p.load ?? null;
+    return {};
+  },
+  "mock.botStatus": (p) => {
+    const b = bots[needStr(p, "bot")];
+    if (!b) throw new OpError("unknown_bot", p.bot);
+    b.status = p.status;
+    broadcast({ event: "bot.status", bot: b.name, status: p.status, running: false });
+    return {};
+  },
   "mock.offline": (p) => {
     needStr(p, "bot");
     if (p.on === false) offlineWrites.delete(p.bot);
@@ -1295,6 +1807,27 @@ const OPS = {
     needStr(p, "bot");
     if (p.on === false) manual.delete(p.bot);
     else manual.add(p.bot);
+    return {};
+  },
+  "mock.steerMode": (p) => {
+    const b = needBot(p);
+    steerMode.set(b.name, p.mode === "reject" ? "reject" : "accept");
+    return {};
+  },
+  "mock.endTurn": (p) => {
+    const b = needBot(p);
+    endTurn(b.name, typeof p.outcome === "string" ? p.outcome : "done");
+    return {};
+  },
+  "mock.steers": () => ({ steers: steers.map((x) => ({ ...x })) }),
+  "mock.ready": (p) => {
+    const b = needBotAny(p);
+    if (p.ok) notReady.delete(b.name);
+    else notReady.set(b.name, typeof p.signIn === "string" ? p.signIn : "");
+    return {};
+  },
+  "mock.noSkills": (p) => {
+    noSkills.add(needStr(p, "bot"));
     return {};
   },
   "mock.cliTitle": (p) => {
@@ -1308,8 +1841,46 @@ const OPS = {
     for (const ev of p.events) broadcast(ev);
     return { count: p.events.length };
   },
+  // mock.sessionRun: the MockHost Claude session's own record appears (as the agent writes it during "/subagents")
+  "mock.sessionRun": (p) => {
+    const ago = typeof p.ago === "number" ? p.ago : undefined;
+    cliRuns = [...cliRuns.filter((r) => r.owner?.type !== "session"), p.agent === "omo" ? (p.batch ? omoBatchRun({ ago }) : omoSessionRun({ ago })) : sessionRun({ ago, hold: p.hold === true })];
+    return { ok: true };
+  },
+  "mock.threads": (p) => {
+    const b = needBot(p);
+    if (!Array.isArray(p.threads)) throw new OpError("bad_request", "threads must be an array");
+    const ids = [];
+    for (const t of p.threads) {
+      const thread = nextId("stored-th");
+      folders.set(thread, { bot: b.name, cwd: t.cwd ?? "/home/me/work", open: true, thread: true, title: String(t.title ?? ""),
+        started: now() - (Number(t.ago) || 0), archived: false, key: null,
+        // a restored row the bridge lists before it attaches the thread: `listedCwd` (often "") until thread.open
+        ...(typeof t.listedCwd === "string" ? { listedCwd: t.listedCwd } : {}) });
+      threadHistory.set(thread, (t.messages ?? []).map(([role, text], i) => ({ id: `seed-${thread}-${i}`, role, text, ts: now() - (Number(t.ago) || 0) + i })));
+      ids.push(thread);
+    }
+    setTimeout(() => broadcast({ event: "thread.added", bot: b.name, thread: ids[0] ?? "", title: "" }), 0);
+    return { threads: ids };
+  },
+  "mock.answer": (p) => {
+    const b = needBot(p);
+    (answers[b.name] ??= []).push(needStr(p, "text"));
+    return {};
+  },
   "mock.reset": () => {
     reset();
+    return {};
+  },
+  // a node of a run changes (a helper returned): its state, and the run's `updated`, as the next runs.list reads it
+  "mock.runNode": (p) => {
+    const run = (runs[needBot(p).name] ?? []).find((r) => r.id === needStr(p, "run"));
+    if (!run) throw new OpError("not_found", "no such run");
+    const node = run.nodes.find((n) => n.id === needStr(p, "node"));
+    if (!node) throw new OpError("not_found", "no such node");
+    node.state = needStr(p, "state");
+    if (node.state !== "running" && node.state !== "waiting") node.ended = now();
+    run.updated = now();
     return {};
   },
   "mock.demo": () => {
@@ -1317,9 +1888,51 @@ const OPS = {
     return { run: DEMO_RUN };
   },
   // a bot whose main chat has no messages yet (first run)
+  "mock.peerBots": (p) => {
+    if (!Array.isArray(p.bots)) throw new OpError("bad_request", "bots must be an array");
+    peerBots = p.bots.map((b) => ({ ...PEER_BOTS_SEED[0], ...b }));
+    return {};
+  },
   "mock.clearHistory": (p) => {
     history[needBot(p).name] = [];
     return {};
+  },
+  "mock.noBotChat": (p) => {
+    noBotChat.add(needBot(p).name);
+    return {};
+  },
+  "mock.watchRun": (p) => {
+    const b = needBot(p);
+    const name = needStr(p, "name");
+    if (p.kind === "silent") {
+      broadcast({ event: "routines.update", bot: b.name });
+      return { count: 0 };
+    }
+    const text = typeof p.text === "string" ? p.text : `${name}: 1 matching post in #alerts\nThe deploy failed on main.`;
+    const at = now();
+    const id = nextId("w");
+    history[b.name].push({ id, role: "assistant", text, ts: at, watch: { name, ts: at } });
+    broadcast({ event: "routine.ran", bot: b.name, routine_id: `job-${name}`, name, status: "ok", ts: at, delivered: b.name });
+    broadcast({ event: "routines.update", bot: b.name });
+    ev(b.name, "turn.start");
+    ev(b.name, "delta", { text });
+    ev(b.name, "message", { id, text, watch: { name, ts: at } });
+    ev(b.name, "turn.end", { outcome: "done" });
+    return { id };
+  },
+  "mock.watches": () => {
+    for (const w of WATCH_SEED) if (!automations.some((x) => x.id === w.id)) automations.push(structuredClone(w));
+    for (const b of new Set(WATCH_SEED.map((w) => w.bot))) broadcast({ event: "routines.update", bot: b });
+    return { count: WATCH_SEED.length };
+  },
+  "mock.watchQueued": (p) => {
+    const b = needBot(p);
+    const name = needStr(p, "name");
+    const n = Number.isInteger(p.n) && p.n > 0 ? p.n : 1;
+    const at = now();
+    for (let i = 0; i < n; i++)
+      history[b.name].push({ id: nextId("w"), role: "assistant", text: `${name}: match ${i + 1}\nA post matched.`, ts: at + i / 1000, watch: { name, ts: at + i / 1000 } });
+    return { count: n };
   },
   "mock.ask": (p) => {
     const b = needBot(p);
@@ -1393,7 +2006,8 @@ function endTurn(bot, outcome, { drop = false } = {}) {
   ev(bot, "turn.end", { outcome });
   ev(bot, "bot.status", { status: bots[bot]?.status, running: false });
   const next = queues[bot]?.shift();
-  if (next !== undefined) setTimeout(() => startTurn(bot, next), 50);
+  const [, session] = bot.split("\u0000");
+  if (next !== undefined) setTimeout(() => startTurn(bot, next, session !== undefined ? folders.get(session) : undefined), 50);
 }
 
 function say(bot, text) {
@@ -1424,12 +2038,115 @@ function startTurn(bot, text, folder) {
     ]);
   }
   ev(bot, "turn.start");
+  if (answers[bot]?.length) return scriptRecorded(bot, answers[bot].shift());
   if (manual.has(bot)) return;
   if (text.startsWith("/approve")) return scriptApproval(bot);
   if (text.startsWith("/clarify")) return scriptClarify(bot);
   if (text.startsWith("/interview")) return schedule(bot, [[150, () => raiseInterview(bot, 0)]]);
   if (text.startsWith("/delegate")) return scriptDelegate(bot);
+  if (peerAsk(text)) return scriptPeer(bot, text);
   scriptNormal(bot, text);
+}
+
+// The bridge's split parser (omher_bridge.split_blocks), line for line: top-level fences only (not in a `>` quote,
+// not inside another fence), strict JSON (exactly the keys of its kind, strings, title <= 80, task <= 4000), at most 3
+// thread blocks and 1 route block. Returns the blocks and the text without them.
+function splitBlocks(text) {
+  const lines = text.split("\n");
+  const keep = [];
+  const creates = [];
+  let route = null;
+  const check = (kind, body) => {
+    let o;
+    try {
+      o = JSON.parse(body);
+    } catch {
+      return null;
+    }
+    if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+    const keys = Object.keys(o).sort().join(",");
+    if (kind === "omher-thread") {
+      if (keys !== "task,title" || typeof o.title !== "string" || typeof o.task !== "string") return null;
+      const title = o.title.trim();
+      const task = o.task.trim();
+      return title && title.length <= 80 && !title.includes("\n") && task && task.length <= 4000 ? { title, task } : null;
+    }
+    return keys === "thread" && typeof o.thread === "string" && o.thread.trim() ? { thread: o.thread.trim() } : null;
+  };
+  const take = (kind, b) => {
+    if (b && kind === "omher-thread") creates.push(b);
+    else if (b && !route) route = b;
+  };
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const inline = /^ {0,3}(`{3,})(omher-thread|omher-thread-route)[ \t]+(\{.*\})[ \t]*\1[ \t]*$/.exec(line);
+    if (inline) {
+      take(inline[2], check(inline[2], inline[3]));
+      continue;
+    }
+    const m = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`]*)[ \t]*(.*?)\s*$/.exec(line);
+    if (!m || line.trimStart().startsWith(">") || (m[1][0] === "`" && m[3].includes("`"))) {
+      keep.push(line);
+      continue;
+    }
+    let j = i + 1;
+    while (j < lines.length) {
+      const c = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(lines[j]);
+      if (c && c[1][0] === m[1][0] && c[1].length >= m[1].length) break;
+      j += 1;
+    }
+    if ((m[2] === "omher-thread" || m[2] === "omher-thread-route") && !m[3]) {
+      if (j < lines.length) take(m[2], check(m[2], lines.slice(i + 1, j).join("\n")));
+    } else keep.push(...lines.slice(i, j + 1));
+    i = j;
+  }
+  return { creates: creates.slice(0, 3), route: creates.length ? null : route, shown: keep.join("\n").replace(/\n{3,}/g, "\n\n").trim() };
+}
+
+// A recorded answer (mock.answer) for a main-chat turn: streamed as written (blocks and all, as Hermes streams it),
+// then the final `message` without its blocks, then what the blocks do (the bridge's _split_effects).
+function scriptRecorded(bot, text) {
+  const { creates, route, shown } = splitBlocks(text);
+  const half = Math.ceil(text.length / 2);
+  schedule(bot, [
+    [80, () => ev(bot, "delta", { text: text.slice(0, half) })],
+    [200, () => ev(bot, "delta", { text: text.slice(half) })],
+    [
+      320,
+      () => {
+        const id = nextId("a");
+        if (shown) {
+          history[bot]?.push({ id, role: "assistant", text: shown, ts: now() });
+          ev(bot, "message", { id, text: shown });
+        }
+        if (route) {
+          const f = folders.get(route.thread);
+          if (f && f.thread && !f.archived && f.bot === bot) ev(bot, "thread.route", { thread: route.thread, title: f.title, message: id });
+        }
+        creates.forEach((c, n) => {
+          const made = OPS["thread.create"]({ bot, title: c.title, key: `split-${id}-${n}` });
+          ev(bot, "thread.split", { thread: made.thread, title: made.title || c.title, message: id });
+          OPS["chat.send"]({ bot, session: made.thread, text: c.task });
+        });
+        endTurn(bot, "done");
+      },
+    ],
+  ]);
+}
+
+// A bot asked to connect a Hermes on another computer answers with one `omher-peer` block (the bridge's note asked it
+// to); omher turns it into the Connect over SSH chip. Nothing connects here.
+function scriptPeer(bot, text) {
+  const ko = hangul.test(text);
+  const block = '```omher-peer\n{"host": "sionic@10.1.145.204", "label": "Mac mini"}\n```';
+  const answer = ko
+    ? `맥미니를 SSH로 붙일게요. 아래 버튼을 누르면 omher가 먼저 확인하고, 연결은 직접 눌러야 돼요.\n\n${block}`
+    : `I'll connect the Mac mini over SSH. Press the button below: omher checks it first, and nothing connects until you press Connect.\n\n${block}`;
+  schedule(bot, [
+    [80, () => ev(bot, "status", { text: "Looking at ~/.ssh/config…" })],
+    [300, () => say(bot, answer)],
+    [400, () => endTurn(bot, "done")],
+  ]);
 }
 
 function scriptNormal(bot, text) {
@@ -1454,18 +2171,43 @@ function scriptNormal(bot, text) {
   ]);
 }
 
-// A delegate_task that hands out two parts of the codex-coexist dag run (one returns, one keeps working).
+// A delegate_task that hands out two parts of the codex-coexist dag run, with Hermes' subagent events in the order a
+// real turn sent them (bridge/tests/fixtures/real-subagent-turn.json): spawn, start, thinking, a tool, then complete.
+// Like the real background fan-out, the children outlive the turn: the turn ends at 600 ms, the first child returns
+// at 1.6 s, the second at 2.6 s (`/delegate fail` makes it fail). The UI events are the bridge's `subagent` shape.
 function scriptDelegate(bot) {
   const dag = [
     { run: "codex-coexist-live", node: "t3-doctor" },
     { run: "codex-coexist-live", node: "t5-verify" },
   ];
+  const fail = /\bfail\b/.test(turns[bot]?.text ?? "");
+  const deleg = `deleg_${Math.random().toString(16).slice(2, 10)}`;
+  const kids = [
+    { id: "sa-0-7c1f2a90", goal: "Doctor check for the Codex pack", model: "gpt-6.1-sol", dag: dag[0], cmd: "omh doctor --codex", out: "The Codex pack is current (12 skills)." },
+    { id: "sa-1-3e9b44d1", goal: "Independent verify vs base + live probes", model: "claude-opus-5-5", dag: dag[1], cmd: "pnpm test --run", out: fail ? "Two probes timed out." : "All 6 probes pass on the branch." },
+  ];
+  const sub = (k, i, state, extra = {}) =>
+    ev(bot, "subagent", { id: k.id, index: i, count: kids.length, goal: k.goal, model: k.model, dag: k.dag, state, ...(state === "queued" ? {} : { delegation: deleg }), ...extra });
   schedule(bot, [
     [80, () => ev(bot, "tool.start", { tool_id: "d1", name: "delegate_task", detail: "Doctor check for the Codex pack (+1 more)", dag })],
-    [400, () => ev(bot, "tool.end", { tool_id: "d1", name: "delegate_task", ok: true, ms: 320 })],
-    [500, () => say(bot, "Both helpers are on it.")],
+    [120, () => kids.forEach((k, i) => sub(k, i, "queued"))],
+    [160, () => kids.forEach((k, i) => sub(k, i, "running"))],
+    [220, () => ev(bot, "tool.end", { tool_id: "d1", name: "delegate_task", ok: true, ms: 140 })],
+    [300, () => kids.forEach((k, i) => sub(k, i, "thinking"))],
+    [420, () => kids.forEach((k, i) => sub(k, i, "running", { tool: "terminal", step: k.cmd }))],
+    [500, () => say(bot, "Both subagents are on it.")],
     [600, () => endTurn(bot, "done")],
   ]);
+  // after the turn: the children report back on their own
+  const later = (ms, fn) => {
+    const h = setTimeout(() => {
+      subTimers.delete(h);
+      fn();
+    }, ms);
+    subTimers.add(h);
+  };
+  later(1600, () => sub(kids[0], 0, "done", { summary: kids[0].out, seconds: 1.4 }));
+  later(2600, () => sub(kids[1], 1, fail ? "failed" : "done", { summary: kids[1].out, seconds: 2.4 }));
 }
 
 function scriptApproval(bot) {

@@ -55,11 +55,11 @@ test("sidebar lists the mock bots and search filters them", async ({ page }) => 
   // Observe a running turn rather than relying on the seed's stale running flag.
   await mock("mock.emit", { events: [{ event: "turn.start", bot: "kami" }] });
   await expect(page.getByTestId("bot-kami").getByTestId("live-ring")).toBeVisible();
-  await page.getByLabel("Search bots").fill("fri");
+  await page.getByLabel("Search bots and sessions").fill("fri");
   await expect(page.getByTestId("bot-friren")).toBeVisible();
   await expect(page.getByTestId("bot-kami")).toHaveCount(0);
   await expect(page.getByTestId("bot-default")).toHaveCount(0);
-  await page.getByLabel("Search bots").fill("");
+  await page.getByLabel("Search bots and sessions").fill("");
   await expect(page.getByTestId("bot-default")).toBeVisible();
 });
 
@@ -116,7 +116,8 @@ test("Stop interrupts the running turn", async ({ page }) => {
   expect(ops).toContain("chat.interrupt");
 });
 
-test("slash shows the skill hint", async ({ page }) => {
+test("slash shows the skill hint when the bot has no skill list", async ({ page }) => {
+  await mock("mock.noSkills", { bot: "kami" });
   await open(page);
   await page.getByTestId("composer").fill("/pl");
   await expect(page.getByTestId("skill-hint")).toBeVisible();
@@ -124,14 +125,15 @@ test("slash shows the skill hint", async ({ page }) => {
   await expect(page.getByTestId("skill-hint")).toHaveCount(0);
 });
 
-test("header right holds only the model pill; name toggles the details column", async ({ page }) => {
+test("header right holds the model pill and the panel button; name toggles the details column", async ({ page }) => {
   await open(page);
   const right = page.getByTestId("head-right");
-  await expect(right.locator(":scope > *")).toHaveCount(1);
+  await expect(right.locator(":scope > *")).toHaveCount(2);
   await expect(right).toContainText("Opus 5.5");
   await expect(right).toContainText("High");
-  // at most one interactive control (the model picker slot renders one button; the fallback none)
-  expect(await right.locator("button, a, [role=button], input, select").count()).toBeLessThanOrEqual(1);
+  // two controls: the model picker's one button and the panel button
+  expect(await right.locator("button, a, [role=button], input, select").count()).toBeLessThanOrEqual(2);
+  await expect(right.locator(":scope > *").last()).toHaveAttribute("data-testid", "panel-button");
   const details = page.getByTestId("details");
   expect((await details.boundingBox())?.width ?? 0).toBeLessThan(2);
   await page.getByTestId("who").click();

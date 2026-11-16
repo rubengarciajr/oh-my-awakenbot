@@ -7,11 +7,12 @@
 import "./cards.css";
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import type { SlotProps } from "../../features";
-import type { ApprovalChoice, ClarifyAnswers, ClarifyQuestion } from "../../lib/protocol";
+import type { ApprovalChoice, AskSubagent, ClarifyAnswers, ClarifyQuestion } from "../../lib/protocol";
 import { askOpen, getStore, useStore, type ApprovalItem, type AskExpiry, type ClarifyItem } from "../../state/store";
 import { answerOf, EMPTY, type Pick } from "./answers";
 import { riskOf } from "./risk";
 import { t, type Key } from "../../i18n";
+import { Markdown } from "../parts/Markdown";
 import { holdImeEnter } from "../../lib/ime";
 
 export const slot = "cards";
@@ -114,6 +115,8 @@ function Approval({ bot, item }: { bot: string; item: ApprovalItem }) {
   };
 
   const risks = riskOf(item.command || "");
+  // plan mode's end asks one thing in plain words: start on the plan below
+  const title = item.plan ? t("card.startPlan") : item.title || t("card.approvalNeeded");
   return (
     <div
       ref={ref}
@@ -121,11 +124,12 @@ function Approval({ bot, item }: { bot: string; item: ApprovalItem }) {
       className={`card${risks.length ? " risky" : ""}`}
       data-testid="card-approval"
       role="group"
-      aria-label={item.title}
+      aria-label={title}
       aria-keyshortcuts={shown.map((b) => b.key).join(" ")}
       onKeyDown={onKey}
     >
-      <div className="card-title">{item.title || t("card.approvalNeeded")}</div>
+      <AskedBy who={item.subagent} />
+      <div className="card-title">{title}</div>
       {risks.length > 0 && (
         <div className="card-risk" data-testid="card-risk" role="note">
           <span className="card-risk-ic" aria-hidden="true">!</span>
@@ -133,6 +137,12 @@ function Approval({ bot, item }: { bot: string; item: ApprovalItem }) {
         </div>
       )}
       {item.command && <pre className="card-cmd">{item.command}</pre>}
+      {/* plan mode's plan: the agent's markdown as an answer reads, whole, scrolling inside the card */}
+      {item.plan && (
+        <div className="card-plan md" data-testid="card-plan">
+          <Markdown text={item.plan} />
+        </div>
+      )}
       {item.cwd && (
         <div className="card-cwd" title={item.cwd} data-testid="card-cwd">
           {t("card.inCwd", { cwd: item.cwd })}
@@ -140,7 +150,7 @@ function Approval({ bot, item }: { bot: string; item: ApprovalItem }) {
       )}
       <div className="card-acts">
         {shown.map((b) => (
-          <button key={b.choice} type="button" className="card-btn soft" disabled={!!busy} onClick={() => void pick(b.choice)}>
+          <button key={b.choice} type="button" className={`card-btn soft ${b.choice}`} data-choice={b.choice} disabled={!!busy} onClick={() => void pick(b.choice)}>
             {t(b.label)}
           </button>
         ))}
@@ -281,6 +291,7 @@ function Interview({ bot, item, cardRef }: { bot: string; item: ClarifyItem; car
         void submit();
       }}
     >
+      <AskedBy who={item.subagent} />
       <div className="card-title">{t("card.questions", { n: qs.length })}</div>
       <ol className="iv-list">
         {qs.map((q, i) => (
@@ -311,6 +322,16 @@ function Interview({ bot, item, cardRef }: { bot: string; item: ClarifyItem; car
         {err && <span className="card-err">{t("card.notSent", { error: err })}</span>}
       </div>
     </form>
+  );
+}
+
+/** "Subagent · Write c.txt via echo asks": over a card raised inside a subagent, so the person knows who asks. */
+function AskedBy({ who }: { who?: AskSubagent }) {
+  if (!who) return null;
+  return (
+    <div className="card-who" data-testid="card-subagent" title={who.name}>
+      {t("card.subagentAsks", { name: who.name || t("sub.untitled", { n: 1 }) })}
+    </div>
   );
 }
 
@@ -345,6 +366,7 @@ function Clarify({ bot, item }: { bot: string; item: ClarifyItem }) {
 
   return (
     <div ref={ref} tabIndex={-1} className="card" data-testid="card-clarify" role="group" aria-label={t("card.question")}>
+      <AskedBy who={item.subagent} />
       <div className="card-title">{item.question}</div>
       <div className="card-acts">
         {multi ? (

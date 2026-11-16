@@ -1158,9 +1158,15 @@ comparison they want to Hermes.
 omh coding paired-run dispatch --decision decision.json --dry-run
 omh coding paired-run dispatch --decision decision.json --confirm-dispatch \
   --task-file task-a=task-a.txt --repo . --provider <provider>
+# a custom provider: declared without its secret, key by variable name
+omh coding paired-run dispatch --decision decision.json --confirm-dispatch \
+  --task-file task-a=task-a.txt --repo . --provider claude-proxy \
+  --provider-base-url http://127.0.0.1:8317/v1 --provider-api-mode chat_completions \
+  --provider-key-env MY_PROXY_KEY
 ```
 
-`--dry-run` parses a committed `paired_run_decision/v1` document, builds the
+`--dry-run` parses a committed `paired_run_decision/v2` document (a `v1` one
+still parses), builds the
 plan, prints it, and launches nothing. Without `--dry-run`, dispatch refuses
 unless `--confirm-dispatch` is typed. A confirmed Hermes matrix then reuses the
 already-sanctioned Hermes-child process boundary; it is not a third subprocess
@@ -1176,6 +1182,60 @@ a shared-resource key still serializes only the cells that name it. The
 Hermes-child bridge's normal
 single-dispatch guard remains the default for every other caller, while this
 confirmed matrix path opts into the paired-run scheduler's own bounded guard.
+
+### The arm setup each cell runs in
+
+Every other Hermes child runs in safe mode with the user's config ignored and
+file tools only. A confirmed paired run is the one caller that leaves safe
+mode, because otherwise both arms would be the same Hermes and the comparison
+would measure noise. Before any cell starts, the invocation prepares one
+disposable Hermes home per arm under a fresh temporary root outside any Hermes
+`profiles/` tree:
+
+- `config.yaml` names the arm's model and the provider. A built-in provider
+  reads its documented key variables; a custom provider is declared by
+  `--provider-base-url` (https, or plain http only to a loopback host; no
+  credentials, query or fragment), `--provider-api-mode` and
+  `--provider-key-env`, the NAME of the variable holding its key. The key is
+  never written to disk and an inline key is refused.
+- The variant home holds the packaged OMH plugin, enabled with its own
+  disposable OMH home, and exactly the arm's frozen `exposed_skills`. The
+  baseline home holds neither. Both arms run the same flags (`--ignore-rules
+  --toolsets file,skills`), so the homes are the only difference.
+- A harness-owned `hermes gateway run --quiet` serves each home in its own
+  process group with a minimal environment, never a launchd or other service
+  job. One untimed warm-up chat absorbs the home's first-start work; its
+  seconds are reported per arm in `execution.arm_homes` and never enter a
+  cell's `elapsed_seconds`, which stays spawn-to-exit of the cell's own chat.
+  The whole gateway group is stopped and the root removed on exit, failure
+  included.
+
+At each cell's spawn the dispatcher reads the home from disk (plugin manifest
+present and enabled in config; the sorted OMH skills present) and signs that
+reading into the receipt as `arm_setup`. A caller cannot supply or keep one.
+Fan-in refuses a cell with no signed setup, a variant that ran without the
+plugin, a baseline that ran with it, or a skills digest that differs from the
+arm's `exposed_skills`. The arm role fixes the plugin expectation, so
+`paired_run_decision/v2` needs no new field.
+
+After the cell's child exits, and while its arm home still exists, the
+dispatcher reads that child's own rows from the home's `state.db` and signs a
+metadata-only `cell_trace` into the same receipt
+(`src/coding/hermes_child_trace.py`): `session_count`, `api_call_count`, the
+input, output, cache-read, cache-write, reasoning and total token counts,
+`tool_call_count` and the ordered `tool_names` (capped at 200, with
+`tool_names_truncated`), `skill_view_count` and the `skill_view_names` it
+opened (capped at 50), and the size in characters of the system prompt and of
+the first request (`system_prompt_chars`, `first_request_chars`). Rows the home
+held before the cell, such as the warm-up chat, are left out. No prompt,
+reply, tool argument or tool result is kept, and a name that is not a short
+plain identifier is stored as `unrecognized`. A missing, locked or empty store
+leaves the trace null, never zero; a column the store lacks nulls only its own
+field. A caller cannot supply or keep a trace, and editing the stored one fails
+verification. The execution report lists each cell's verified trace, so a
+speed difference can be read as extra model round-trips, extra tool calls or
+a larger prompt instead of only as seconds. A tool reached through Hermes'
+deferred-tool bridge appears as `tool_call`, not under the tool's own name.
 
 The built-in receipt-capable adapter currently supports decision arms whose
 executor is `hermes`. A Codex, Claude Code, or generic arm is refused before
@@ -1209,7 +1269,7 @@ command line. What the payload states:
   touch.
 - **The boundary itself.** `local_runner_boundary` records that a confirmed
   dispatch uses an explicit confirmed adapter, that the built-in Hermes adapter
-  reuses the sanctioned child bridge, and that `paired_run_decision/v1`
+  reuses the sanctioned child bridge, and that `paired_run_decision/v2`
   carries no raw task content.
 
 Evidence closes the loop in one direction only. An execution matrix becomes an
@@ -1220,6 +1280,47 @@ rate-limited, and cleanup-failed cells each block the fan-in rather than
 degrading it to a weaker result. Behavioral verdicts stay explicit request
 values: an exit code, a process status, or anything the child printed never
 decides behavior.
+
+### Speed at equal quality
+
+A paired run answers whether the variant finishes the same frozen tasks faster
+than the baseline, and it may say so only when correctness did not drop.
+
+Time comes from one place. The Hermes-child dispatcher reads its monotonic
+clock right after the child process is spawned and again at the terminal event
+(completed, failed, timed out, or cancelled), and signs the difference, rounded
+to the millisecond, into the receipt's `elapsed_seconds`. Prepared and running
+events, and a cell cancelled before any process started, carry `null`. A
+caller cannot supply the figure, and editing it breaks the receipt signature.
+Each `paired_run_decision/v2` result row repeats it as
+`receipt_elapsed_seconds`, and parsing re-reads the signed receipt and refuses
+a row whose seconds differ.
+
+The aggregate's `speed_at_equal_quality` block is recomputed from the rows on
+every parse, so a hand-edited verdict or total does not survive either:
+
+- **`quality_gate`** is `held` when at least one task was observed on both arms
+  and none went from a baseline pass to a variant fail, `regressed` when any
+  did (`regressed_task_count` says how many), and `unmeasured` when no task was
+  observed on both arms. A variant that fixes a task the baseline failed does
+  not regress it.
+- **Timing** covers only tasks that both arms passed with seconds on both
+  sides (`timed_task_count`). Every other task is counted in `excluded` under
+  exactly one class: `one_arm_failed`, `both_failed`, `missing_elapsed`,
+  `infra_error`, or `not_observed`.
+- **`verdict`** is `variant_faster`, `variant_slower`, or `no_difference`
+  (comparing the two arms' total seconds over the timed tasks) only when the
+  gate held and at least one task was timed. A regressed gate gives
+  `quality_regressed` and every timing field is `null`, even when the variant
+  was faster. Anything else is `unmeasured`, again with `null` fields, never 0.
+- Beside the totals sit both arms' median seconds and `variant_faster_rate`,
+  the share of timed tasks the variant finished faster, in the
+  `omh_reported_rate/v1` shape with its denominator and exclusions.
+
+All of it is observed only from signed local receipts; the block states what
+those receipts recorded and makes no claim beyond the decision's task set. A
+`v1` decision has no timing: it still parses, reads as `unmeasured`, and may be
+superseded by a `v2` decision for the same pair, never the reverse.
 
 ## Showing the shape of one prepared artifact
 

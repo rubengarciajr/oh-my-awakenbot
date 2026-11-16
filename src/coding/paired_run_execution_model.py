@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TypeAlias
 
@@ -150,6 +151,9 @@ class PairedRunExecutionReport:
 
     plan: PairedRunDispatchPlan
     receipts: tuple[PairedRunExecutionOutcome, ...]
+    # Per-arm home records of a local run (warm-up seconds, signed-able arm
+    # setup, gateway stopped); empty for an injected runner.
+    arm_homes: Mapping[str, Mapping[str, JsonValue]] = field(default_factory=dict)
 
     @property
     def fan_in_ready(self) -> bool:
@@ -160,7 +164,7 @@ class PairedRunExecutionReport:
 
     def metadata(self) -> dict[str, JsonValue]:
         """Return only stable execution metadata suitable for caller persistence."""
-        return {
+        payload: dict[str, JsonValue] = {
             "decision_id": self.plan.decision_id,
             "fan_in_ready": self.fan_in_ready,
             "cells": [
@@ -172,10 +176,19 @@ class PairedRunExecutionReport:
                     "reused": item.reused,
                     "receipt_ref": item.receipt.receipt_ref if item.receipt else "",
                     "crash_reason": _crash_reason_payload(item.crash_reason),
+                    # The signed metadata-only trace from the verified receipt.
+                    "cell_trace": (
+                        item.receipt.cell_trace.to_record()
+                        if item.receipt is not None and item.receipt.cell_trace is not None
+                        else None
+                    ),
                 }
                 for item in self.receipts
             ],
         }
+        if self.arm_homes:
+            payload["arm_homes"] = {role: dict(record) for role, record in self.arm_homes.items()}
+        return payload
 
 
 def _crash_reason_payload(reason: PairedRunCrashReason | None) -> JsonValue:

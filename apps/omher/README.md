@@ -23,6 +23,14 @@ If Hermes is missing, first launch offers **Install**. It installs Hermes Agent 
 the upstream installer, then connects to your local bots. Model providers and coding tools still use your
 own accounts. The app never takes over or patches Hermes.
 
+## Update based on omher 0.2.11
+
+This build brings upstream chat threads, remote-machine connections over SSH, configurable ACP agents,
+terminal improvements and navigation fixes into Awaken Bot. The Awaken name, church wordmark, orb,
+off-black theme, loading treatment, saved app identifier and updater remain the fork's own.
+The sidebar now uses an explicit list: the saved bot and pinned bots return first, and other profiles
+can be added from **+** without recreating or deleting them. Chats and saved provider settings remain in Hermes.
+
 ## Bots, models and desktop window
 
 The sidebar **+ → Create a bot** creates a separate Hermes profile inside the app. Choose a name,
@@ -109,6 +117,17 @@ Users choose to install and restart; releases already public are not overwritten
 
 Apple Developer ID signing/notarization and Windows code signing can be added before a wider launch.
 They are not required to produce these test installers.
+
+## Updates for installed users
+
+Awaken Bot checks its public GitHub update feed when it opens. This build also checks every six hours,
+and when the window returns after a check is at least thirty minutes old. When a newer release is available,
+**Update to <version>** appears in the sidebar. Choose it, confirm the restart, and the app downloads,
+verifies and installs the signed update, saves the open workspace, and restarts. Chats and model settings
+remain in their existing Hermes profiles. People do not need GitHub accounts or a new DMG for each update.
+
+A maintainer ships updates through the versioned draft-and-publish workflow above. A successful CI build
+alone does not change what users receive; publishing promotes the reviewed manifest at `awakenbot-latest`.
 
 ## Bring in upstream updates
 

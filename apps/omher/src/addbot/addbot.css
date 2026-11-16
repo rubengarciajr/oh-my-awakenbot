@@ -6,21 +6,27 @@
   letter-spacing: 0.07em;
   padding: 4px 6px 0;
 }
-.ab-sub {
-  font-size: 11.5px;
-  color: var(--quiet);
-  padding: 2px 6px 6px;
-  margin: 0;
-}
 .ab-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
 .ab-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 12px;
-  color: var(--quiet);
+  color: var(--muted);
   padding: 6px;
+}
+.ab-hint {
+  font-size: 11px;
+  color: var(--quiet);
+}
+.ab-hint code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
 }
 .ab-row {
   display: flex;
@@ -45,33 +51,12 @@
   color: var(--ink);
 }
 .ab-s {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
-}
-.ab-p {
-  color: var(--quiet);
+  text-overflow: ellipsis;
   font-family: var(--mono);
   font-size: 10.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ab-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--quiet);
-  flex: none;
-}
-.ab-dot.online {
-  background: var(--ok);
-}
-.ab-dot.starting {
-  background: var(--w4);
 }
 .ab-btn {
   height: 24px;
@@ -93,6 +78,32 @@
   background: var(--line);
   margin: 6px 0;
 }
+.ab-ssh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  text-align: left;
+}
+.ab-ssh:hover {
+  background: var(--hover);
+}
+.ab-ssh .ssh-ic {
+  flex: none;
+  width: 22px;
+  color: var(--muted);
+}
+.ab-ssh .ab-s {
+  font-family: inherit;
+  font-size: 11px;
+}
+.ab-n .ssh-mark {
+  margin-left: 5px;
+}
+
 .ab-new {
   display: flex;
   align-items: center;
@@ -116,16 +127,10 @@
 }
 .ab-form textarea { resize: vertical; }
 .ab-form input:focus-visible, .ab-form select:focus-visible, .ab-form textarea:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
-.ab-hint { font-size: 11px; line-height: 1.5; color: var(--quiet); margin: 6px 0 0; }
+.ab-form .ab-hint { font-size: 11px; line-height: 1.5; color: var(--quiet); margin: 6px 0 0; }
 .ab-error { font-size: 12px; line-height: 1.5; color: var(--danger); margin: 12px 6px 0; }
 .ab-actions { display: flex; justify-content: space-between; gap: 10px; margin: 16px 6px 6px; }
 .ab-actions .ab-btn { height: 32px; }
 .ab-submit { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); }
-.ab-soon {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--quiet);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 0 4px;
-}
+
+.ab-sub { font-size: 11.5px; color: var(--quiet); padding: 2px 6px 6px; margin: 0; }

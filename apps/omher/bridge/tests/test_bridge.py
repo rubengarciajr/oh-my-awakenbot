@@ -36,8 +36,15 @@ class GatewayClientError(ValueError):
 class FakeClient:
     """The slice of ``GatewayClient`` the bridge uses: ``rpc`` and ``events``."""
 
-    def __init__(self, name: str, *, bot_chat: bool = True, sessions=None, history=None, caps=None):
+    def __init__(self, name: str, *, bot_chat: bool = True, sessions=None, history=None, caps=None, lacks=(), ready=None,
+                 model_replies=None, resume_bumps=False):
         self.name = name
+        # session.mutate "model" answers in order (Hermes' selection guard refusals); the echo once they run out
+        self.model_replies = list(model_replies or [])
+        self.resume_bumps = resume_bumps  # each session.resume moves the revision, as a real gateway's may
+        # setup.runtime_check answers in order (a dict, or an exception to raise); the last one repeats
+        self.ready = list(ready) if ready else [{"ok": True, "provider": "claude-proxy", "model": "claude-opus-5-5", "source": "pool"}]
+        self.lacks = set(lacks)  # methods this gateway does not have: they fail as Hermes' do, `unknown_method`
         self.caps = caps if caps is not None else {}  # client.capabilities answer, or an exception to raise
         self.events: asyncio.Queue = asyncio.Queue()
         self.calls: list[tuple[str, dict]] = []
@@ -53,6 +60,8 @@ class FakeClient:
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
+        if method in self.lacks:
+            raise GatewayRPCError("unknown_method")
         if method == "session.list":
             if params.get("title") == ob.BOT_CHAT_TITLE:
                 rows = [{"id": MAIN_STORED, "title": ob.BOT_CHAT_TITLE, "source": "tui"}] if self.bot_chat else []
@@ -64,6 +73,8 @@ class FakeClient:
         if method == "session.info":
             return dict(self.model_info)
         if method == "session.resume":
+            if self.resume_bumps:
+                self.revision += 1
             return {"session_id": MAIN_RUNTIME, "stored_session_id": params["session_id"], "running": False,
                     "messages": [
                         {"role": "user", "text": "hi", "timestamp": 100.5, "row_id": 1},
@@ -72,6 +83,11 @@ class FakeClient:
                         {"role": "user", "text": "secret", "display_kind": "hidden", "row_id": 4}],
                     "info": dict(self.model_info), "revision": self.revision, "execution_generation": 3,
                     "prompts": []}
+        if method == "setup.runtime_check":
+            answer = self.ready.pop(0) if len(self.ready) > 1 else self.ready[0]
+            if isinstance(answer, Exception):
+                raise answer
+            return dict(answer)
         if method == "client.capabilities":
             if isinstance(self.caps, Exception):
                 raise self.caps
@@ -82,6 +98,7 @@ class FakeClient:
             if params.get("cwd"):  # a folder chat (SESSIONS > oh-my-hermes)
                 n = len(self.find("session.create")) - 1
                 return {"session_id": f"rt-folder-{n}", "stored_session_id": f"stored-folder-{n}", "messages": [],
+                        "subscription_id": f"sub-folder-{n}",
                         "info": {**self.model_info, "cwd": params["cwd"]}, "revision": 0, "execution_generation": 0}
             return {"session_id": MAIN_RUNTIME, "stored_session_id": MAIN_STORED, "messages": [],
                     "info": dict(self.model_info), "revision": 0, "execution_generation": 0}
@@ -99,6 +116,8 @@ class FakeClient:
             return {"providers": [{"slug": "claude-proxy", "name": "Claude", "models": ["claude-opus-5-5", "x"]}],
                     "model": "claude-opus-5-5", "provider": "claude-proxy"}
         if method == "session.mutate":
+            if params["operation"] == "model" and self.model_replies:
+                return self.model_replies.pop(0)
             return {"session_id": params["session_id"], "operation": params["operation"]}
         if method == "image.attach_bytes":
             if params["content_base64"] == "bad":
@@ -324,6 +343,26 @@ class BotsAndChat(BridgeCase):
             self.assertEqual(kami["status"], "online")
             self.assertEqual(kami["display_name"], "Kami!")  # live profiles.list wins once a gateway is attached
 
+    async def test_chat_open_existing_only_never_creates_a_bot_chat(self):
+        # a bot outside the sidebar list is asked for its waiting prompts; asking must not make its Bot Chat
+        async with Env(bot_chat=False) as env:
+            s = await self.open(env)
+            r = await s.req("chat.open", bot="kami", existing_only=True)
+            self.assertFalse(r["ok"], r)
+            self.assertEqual(r["error"]["code"], "not_found")
+            c = env.clients["kami"]
+            self.assertEqual(c.find("session.create"), [])
+            self.assertEqual(c.find("session.title"), [])
+
+    async def test_chat_open_existing_only_resumes_an_existing_bot_chat(self):
+        async with Env() as env:
+            s = await self.open(env)
+            r = await s.req("chat.open", bot="kami", existing_only=True)
+            self.assertTrue(r["ok"], r)
+            c = env.clients["kami"]
+            self.assertEqual(c.find("session.resume"), [{"session_id": MAIN_STORED}])
+            self.assertEqual(c.find("session.create"), [])
+
     async def test_chat_open_creates_missing_bot_chat(self):
         async with Env(bot_chat=False) as env:
             s = await self.open(env)
@@ -402,6 +441,61 @@ class BotsAndChat(BridgeCase):
             self.assertEqual((await s.req("chat.set_model", bot="kami", reasoning="turbo"))["error"]["code"], "bad_request")
             self.assertEqual((await s.req("chat.set_model", bot="kami"))["error"]["code"], "bad_request")
 
+    GUARD = {"status": "confirmation_required", "confirm": "tok-1", "confirm_message": "Switch to a 1M-context model?"}
+
+    def model_mutates(self, env: Env) -> list[dict]:
+        return [m for m in env.clients["kami"].find("session.mutate") if m["operation"] == "model"]
+
+    async def test_a_guarded_pick_waits_for_explicit_confirmation_on_the_same_fence(self):
+        """A picker selection returns the guard; only the person's next confirmed request carries its token."""
+        async with Env(model_replies=[self.GUARD], resume_bumps=True) as env:
+            s = await self.open(env)
+            selection = {"bot": "kami", "model": "claude-sonnet-5-5", "provider": "claude-proxy"}
+            r = await s.req("chat.set_model", **selection)
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["result"]["confirmation"], {"token": "tok-1", "message": self.GUARD["confirm_message"]})
+            self.assertEqual(len(self.model_mutates(env)), 1)
+            confirmed = await s.req("chat.set_model", **selection, confirm="tok-1")
+            self.assertTrue(confirmed["ok"], confirmed)
+            self.assertNotIn("confirmation", confirmed["result"])
+            muts = self.model_mutates(env)
+            self.assertEqual([m["payload"] for m in muts],
+                             [{"model": "claude-sonnet-5-5", "provider": "claude-proxy"},
+                              {"model": "claude-sonnet-5-5", "provider": "claude-proxy", "confirm": "tok-1"}])
+            fences = {(m["session_id"], m["expected_revision"], m["expected_generation"]) for m in muts}
+            self.assertEqual(len(fences), 1, fences)
+            self.assertNotEqual(muts[0]["request_id"], muts[1]["request_id"])
+
+    async def test_a_guard_without_a_token_is_refused_after_one_mutate(self):
+        async with Env(model_replies=[{"status": "confirmation_required", "confirm_message": "needs a yes"}]) as env:
+            s = await self.open(env)
+            r = await s.req("chat.set_model", bot="kami", model="claude-sonnet-5-5")
+            self.assertEqual(r["error"]["code"], "confirmation_required", r)
+            self.assertEqual(len(self.model_mutates(env)), 1)
+
+    async def test_a_changed_guard_is_returned_for_confirmation_without_an_automatic_retry(self):
+        async with Env(model_replies=[self.GUARD, dict(self.GUARD, confirm="tok-2")]) as env:
+            s = await self.open(env)
+            selection = {"bot": "kami", "model": "claude-sonnet-5-5"}
+            first = await s.req("chat.set_model", **selection)
+            self.assertEqual(first["result"]["confirmation"]["token"], "tok-1")
+            second = await s.req("chat.set_model", **selection, confirm="tok-1")
+            self.assertEqual(second["result"]["confirmation"]["token"], "tok-2")
+            self.assertEqual([m["payload"].get("confirm") for m in self.model_mutates(env)], [None, "tok-1"])
+
+    async def test_models_options_current_is_the_main_sessions_live_model(self):
+        """`model.options` names the profile default; a session-level switch shows only in session.resume's info."""
+        async with Env() as env:
+            s = await self.open(env)
+            self.assertTrue((await s.req("chat.open", bot="kami"))["ok"])
+            c = env.clients["kami"]
+            c.model_info = {"model": "claude-sonnet-5-5", "provider": "other-proxy", "reasoning_effort": "low"}
+            current = (await s.req("models.options", bot="kami"))["result"]["current"]
+            self.assertEqual(current, {"model": "claude-sonnet-5-5", "provider": "other-proxy", "reasoning": "low"})
+            c.model_info = {"reasoning_effort": "low"}  # an info without the route falls back to the profile default
+            current = (await s.req("models.options", bot="kami"))["result"]["current"]
+            self.assertEqual(current, {"model": "claude-opus-5-5", "provider": "claude-proxy", "reasoning": "low"})
+
     async def test_models_options_shape(self):
         async with Env() as env:
             s = await self.open(env)
@@ -409,6 +503,66 @@ class BotsAndChat(BridgeCase):
             self.assertEqual(r["providers"], [{"slug": "claude-proxy", "name": "Claude", "models": ["claude-opus-5-5", "x"]}])
             self.assertEqual(r["current"]["model"], "claude-opus-5-5")
             self.assertEqual(r["reasoning_levels"], ["none", "low", "medium", "high", "xhigh"])
+
+
+class BotsReady(BridgeCase):
+    """bots.ready: the bot's own setup.runtime_check, read-only, answered as {ok, provider, model, error}."""
+
+    NOT_READY = {"ok": False, "error": "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one."}
+
+    async def test_ready_bot(self):
+        async with Env() as env:
+            s = await self.open(env)
+            r = (await s.req("bots.ready", bot="kami"))["result"]
+            self.assertEqual(r, {"ok": True, "provider": "claude-proxy", "model": "claude-opus-5-5", "error": ""})
+            c = env.clients["kami"]
+            self.assertEqual(c.find("setup.runtime_check"), [{}])
+            # read-only: no chat is opened, nothing is changed
+            for m in ("session.create", "session.mutate", "prompt.submit", "config.set"):
+                self.assertEqual(c.find(m), [], m)
+
+    async def test_not_ready_bot_carries_hermes_error(self):
+        async with Env(ready=[self.NOT_READY]) as env:
+            s = await self.open(env)
+            r = (await s.req("bots.ready", bot="kami"))["result"]
+            self.assertEqual(r, {"ok": False, "provider": "", "model": "", "error": self.NOT_READY["error"]})
+
+    async def test_a_sign_in_provider_asks_the_strict_check(self):
+        async with Env() as env:
+            s = await self.open(env)
+            for pid in ("openai-codex", "anthropic", "nous"):
+                self.assertTrue((await s.req("bots.ready", bot="kami", provider=pid))["ok"])
+            self.assertEqual(env.clients["kami"].find("setup.runtime_check"),
+                             [{"provider": "openai-codex"}, {"provider": "anthropic"}, {"provider": "nous"}])
+            for bad in ("", 3, "anthropic --x", "Nous", "-x", "a/b", "$(id)"):
+                r = await s.req("bots.ready", bot="kami", provider=bad)
+                self.assertEqual(r["error"]["code"], "bad_request", bad)
+            self.assertEqual((await s.req("bots.ready", bot="ghost"))["error"]["code"], "unknown_bot")
+
+    async def test_still_checking_is_asked_again_then_reported_unknown(self):
+        busy = GatewayRPCError("readiness_in_progress")
+        with mock.patch.object(ob, "READY_RETRY", (0.0, 0.0, None)):
+            async with Env(ready=[busy, self.NOT_READY]) as env:
+                s = await self.open(env)
+                r = (await s.req("bots.ready", bot="kami"))["result"]
+                self.assertFalse(r["ok"])
+                self.assertEqual(len(env.clients["kami"].find("setup.runtime_check")), 2)
+            async with Env(ready=[busy]) as env:
+                s = await self.open(env)
+                r = (await s.req("bots.ready", bot="kami"))["result"]
+                self.assertEqual((r["ok"], r.get("unknown")), (True, True))
+                self.assertEqual(len(env.clients["kami"].find("setup.runtime_check")), 3)
+
+    async def test_an_older_gateway_without_the_probe_shows_no_block(self):
+        async with Env(lacks={"setup.runtime_check"}) as env:
+            s = await self.open(env)
+            r = (await s.req("bots.ready", bot="kami"))["result"]
+            self.assertEqual((r["ok"], r.get("unknown")), (True, True))
+
+    async def test_an_offline_bot_is_an_error_not_a_verdict(self):
+        async with Env(fail={"kami"}) as env:
+            s = await self.open(env)
+            self.assertEqual((await s.req("bots.ready", bot="kami"))["error"]["code"], "bot_offline")
 
 
 class EventMapping(BridgeCase):
@@ -448,6 +602,83 @@ class EventMapping(BridgeCase):
             self.assertNotIn("skill", kinds)
             running = [(e["status"], e["running"]) for e in s.events if e["event"] == "bot.status"]
             self.assertEqual(running[-2:], [("online", True), ("online", False)])
+
+    async def test_a_real_fan_out_becomes_subagent_events_clipped_with_no_thinking_text(self):
+        """kami's Bot Chat, one real turn asking two subagents for `date +%F` and `uname -s` (gateway frames as
+        recorded; the two `subagent.complete` frames came after the parent's turn ended and are rebuilt from the
+        children's own task logs, `rebuilt_from_task_log`)."""
+        frames = json.loads((HERE / "fixtures" / "real-subagent-turn.json").read_text(encoding="utf-8"))
+        async with Env() as env:
+            s = await self.open(env)
+            await s.req("chat.open", bot="kami")
+            c = env.clients["kami"]
+            for f in frames:
+                c.push(f["type"], f["payload"], execution_generation=1)
+            await s.until(lambda ev: sum(e["event"] == "subagent" and e.get("state") == "done" for e in ev) == 2)
+            ev = [e for e in s.events if e["event"] != "bot.status"]
+            sub = [e for e in ev if e["event"] == "subagent"]
+            # every subagent.* frame but none dropped: 2 spawn, 2 start, 3 thinking, 1 tool, 2 complete
+            self.assertEqual([e["state"] for e in sub], ["queued", "queued", "running", "running", "thinking", "thinking",
+                                                        "running", "thinking", "done", "done"])
+            self.assertEqual({e["id"] for e in sub}, {"sa-0-ab7aca17", "sa-1-0a3ce8a1"})
+            self.assertEqual({(e["index"], e["count"]) for e in sub}, {(0, 2), (1, 2)})
+            self.assertTrue(all(e["bot"] == "kami" and "session" not in e for e in sub))
+            first = sub[0]
+            self.assertEqual(set(first), {"event", "bot", "id", "index", "count", "goal", "model", "state"})
+            self.assertEqual(first["model"], "claude-fable-5-2")
+            started = [e for e in sub if e["state"] == "running" and "step" not in e]
+            self.assertEqual({e["delegation"] for e in started}, {"deleg_40dc82e8"})
+            # the goal, clipped: no frame's text runs past the caps
+            self.assertTrue(all(len(e["goal"]) <= ob.SUBAGENT_GOAL for e in sub))
+            self.assertTrue(first["goal"].startswith("Run the shell command `date +%F` in the terminal"))
+            tool = next(e for e in sub if e.get("tool"))
+            self.assertEqual((tool["id"], tool["tool"], tool["step"]), ("sa-1-0a3ce8a1", "terminal", "uname -s"))
+            # thinking: the state only, never a text field
+            self.assertTrue(all(set(e) & {"text", "step", "summary"} == set() for e in sub if e["state"] == "thinking"))
+            done = {e["id"]: e for e in sub if e["state"] == "done"}
+            self.assertEqual((done["sa-0-ab7aca17"]["summary"], done["sa-0-ab7aca17"]["seconds"]), ("2026-11-11", 8.8))
+            self.assertEqual((done["sa-1-0a3ce8a1"]["summary"], done["sa-1-0a3ce8a1"]["seconds"]), ("Darwin", 6.1))
+            # the parent's turn: one start, one end; the late subagent frames open no second turn
+            kinds = [e["event"] for e in ev]
+            self.assertEqual((kinds.count("turn.start"), kinds.count("turn.end")), (1, 1))
+            self.assertLess(kinds.index("turn.end"), max(i for i, k in enumerate(kinds) if k == "subagent"))
+            ts = next(e for e in ev if e["event"] == "tool.start")
+            self.assertEqual(ts["name"], "delegate_task")
+            self.assertLess(kinds.index("tool.start"), kinds.index("subagent"))
+
+    def test_subagent_fields_clip_every_text_and_take_the_dag_mark_off_the_goal(self):
+        long = "x" * 900
+        f = ob.subagent_fields("subagent.start", {"subagent_id": "sa-0", "task_index": 0, "task_count": 3,
+                                                  "goal": "[dag:docs-dark/contrast] Check the contrast " + long,
+                                                  "delegation_id": "deleg_1", "model": "m" * 300})
+        self.assertEqual(f["dag"], {"run": "docs-dark", "node": "contrast"})
+        self.assertTrue(f["goal"].startswith("Check the contrast"))
+        self.assertEqual((len(f["goal"]), len(f["model"])), (ob.SUBAGENT_GOAL, 80))
+        t = ob.subagent_fields("subagent.tool", {"subagent_id": "sa-0", "tool_name": "terminal", "text": long})
+        self.assertEqual(len(t["step"]), ob.SUBAGENT_STEP)
+        c = ob.subagent_fields("subagent.complete", {"subagent_id": "sa-0", "status": "failed", "summary": long,
+                                                     "duration_seconds": 12.345, "output_tail": [long]})
+        self.assertEqual((c["state"], len(c["summary"]), c["seconds"]), ("failed", ob.SUBAGENT_SUMMARY, 12.3))
+        self.assertNotIn("output_tail", c)
+        th = ob.subagent_fields("subagent.thinking", {"subagent_id": "sa-0", "text": "my secret chain of thought"})
+        self.assertNotIn("my secret", json.dumps(th))
+        pr = ob.subagent_fields("subagent.progress", {"subagent_id": "sa-0", "text": "🔀 [1] read_file, terminal"})
+        self.assertEqual(pr["step"], "[1] read_file, terminal")
+        self.assertIsNone(ob.subagent_fields("subagent.text", {"subagent_id": "sa-0", "text": "tok"}))
+        self.assertIsNone(ob.subagent_fields("subagent.start", {"goal": "no id"}))
+        self.assertEqual(ob.subagent_fields("subagent.complete", {"subagent_id": "s", "status": "interrupted"})["state"],
+                         "cancelled")
+
+    async def test_subagent_events_of_another_session_are_not_forwarded(self):
+        async with Env() as env:
+            s = await self.open(env)
+            await s.req("chat.open", bot="kami")
+            c = env.clients["kami"]
+            c.push("subagent.start", {"subagent_id": "sa-x", "goal": "elsewhere"}, sid="someone-else")
+            c.push("subagent.start", {"subagent_id": "sa-y", "goal": "mine"})
+            await s.until(lambda ev: any(e["event"] == "subagent" for e in ev))
+            await asyncio.sleep(0.05)
+            self.assertEqual([e["id"] for e in s.events if e["event"] == "subagent"], ["sa-y"])
 
     async def test_skill_view_also_emits_skill(self):
         async with Env() as env:
@@ -938,6 +1169,8 @@ class Plugins(BridgeCase):
             rows = (await s.req("plugins.list", bot="kami"))["result"]["plugins"]
             self.assertEqual([(r["name"], r["enabled"], r["tier"], r["needs_env"]) for r in rows],
                              [("homeassistant", True, "official", []), ("browserbase", False, "bundled", ["BROWSERBASE_API_KEY"])])
+            # live_tools: what the plugin registered in the running gateway (Hermes' loader record), never the catalog
+            self.assertEqual([r["live_tools"] for r in rows], [2, 0])
             self.assertTrue((await s.req("plugins.toggle", bot="kami", key="homeassistant", enable=False))["ok"])
             self.assertFalse((await s.req("plugins.toggle", bot="kami", key="homeassistant"))["ok"])
             self.assertTrue((await s.req("plugins.update", bot="kami", name="homeassistant"))["ok"])
@@ -1001,7 +1234,7 @@ class ReadOnlyRule(BridgeCase):
         src = (HERE.parent / "omher_bridge.py").read_text(encoding="utf-8")
         self.assertEqual(len(re.findall(r"prompt\.submit", src)), 1)
         sites = re.findall(r"self\._submit\(([^)]*)\)", src)
-        self.assertEqual(sites, ["conn, main, text, input_id"])
+        self.assertEqual(sites, ["conn, main, text, input_id, queued"])
 
     def test_bridge_makes_no_model_or_http_call(self):
         src = (HERE.parent / "omher_bridge.py").read_text(encoding="utf-8")
@@ -1009,8 +1242,9 @@ class ReadOnlyRule(BridgeCase):
         for needle in ("urllib.request", "requests", "httpx", "aiohttp", "openai", "anthropic"):
             self.assertIsNone(re.search(rf"\b{re.escape(needle)}\b", src), needle)
 
-    def test_the_only_programs_it_runs_are_read_only_git_and_one_gh_read(self):
-        """BOUNDARY rules 10 and 21: `git` reads in _git, and `gh pr view` in gh_pr_view (RunsPr pins its argv)."""
+    def test_the_only_programs_it_runs_are_read_only_git_one_gh_read_and_hermes_restart(self):
+        """BOUNDARY rules 10, 21 and 29: `git` reads in _git, `gh pr view` in gh_pr_view (RunsPr pins its argv), and
+        Hermes' own `gateway restart` for one bot in run_hermes_restart (RestartArgv pins its argv)."""
         import ast
         src = (HERE.parent / "omher_bridge.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
@@ -1021,7 +1255,7 @@ class ReadOnlyRule(BridgeCase):
                     if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "subprocess" \
                             and n.attr in ("run", "Popen", "call", "check_call", "check_output"):
                         uses.append(fn.name)
-        self.assertEqual(uses, ["_git", "gh_pr_view"])
+        self.assertEqual(uses, ["_git", "gh_pr_view", "run_hermes_restart"])
         self.assertNotIn("create_subprocess", src)
         self.assertNotIn("os.system", src)
         self.assertEqual(ob.GIT_READS, {("worktree", "list"), ("rev-parse",), ("status",), ("diff",), ("log",),
@@ -1076,10 +1310,52 @@ class FolderChats(BridgeCase):
                 self.assertEqual((msg["session"], msg["text"]), (fid, "two files"))
 
                 self.assertTrue((await s.req("folder.close", bot="kami", session=fid))["ok"])
-                self.assertEqual(c.find("session.close"), [{"session_id": "rt-folder-0"}])
+                self.assertEqual(c.find("session.detach"), [{"session_id": "rt-folder-0", "subscription_id": "sub-folder-0",
+                                                             "end_reason": "omher_close"}])
+                self.assertEqual(c.find("session.close"), [])
                 r = await s.req("chat.send", bot="kami", session=fid, text="again")
                 self.assertEqual(r["error"]["code"], "not_found")
                 self.assertEqual(len(c.find("prompt.submit")), 1)
+
+    async def test_close_ends_the_hermes_conversation_on_a_gateway_without_session_close(self):
+        """Hermes 0.23's gateway has `session.detach` and no `session.close`: closing the folder chat detaches the
+        subscription `session.create` gave, as a close (`end_reason`), so Hermes ends the conversation, and the
+        close reports no error. A gateway that has no `session.detach` gets `session.close`, as before."""
+        with tempfile.TemporaryDirectory() as folder:
+            async with Env(lacks={"session.close"}) as env:
+                s = await self.open(env)
+                fid = (await s.req("folder.open", bot="kami", cwd=folder))["result"]["session"]
+                c = env.clients["kami"]
+                r = await s.req("folder.close", bot="kami", session=fid)
+                self.assertTrue(r["ok"], r)
+                self.assertEqual([m for m, _ in c.calls if m in ("session.detach", "session.close")], ["session.detach"])
+                self.assertEqual(c.find("session.detach")[0], {"session_id": "rt-folder-0", "subscription_id": "sub-folder-0",
+                                                               "end_reason": "omher_close"})
+            async with Env(lacks={"session.detach"}) as env:
+                s = await self.open(env)
+                fid = (await s.req("folder.open", bot="kami", cwd=folder))["result"]["session"]
+                c = env.clients["kami"]
+                r = await s.req("folder.close", bot="kami", session=fid)
+                self.assertTrue(r["ok"], r)
+                self.assertEqual([m for m, _ in c.calls if m in ("session.detach", "session.close")], ["session.detach", "session.close"])
+                self.assertEqual(c.find("session.close"), [{"session_id": "rt-folder-0"}])
+            # any other refusal of the detach is the close's error, and nothing else is tried
+            async with Env() as env:
+                s = await self.open(env)
+                fid = (await s.req("folder.open", bot="kami", cwd=folder))["result"]["session"]
+                c = env.clients["kami"]
+                real_rpc = c.rpc
+
+                async def refuse(method, **params):
+                    if method == "session.detach":
+                        c.calls.append((method, params))
+                        raise GatewayRPCError("invalid_params")
+                    return await real_rpc(method, **params)
+
+                c.rpc = refuse
+                r = await s.req("folder.close", bot="kami", session=fid)
+                self.assertEqual(r["error"]["code"], "invalid_params")
+                self.assertEqual(c.find("session.close"), [])
 
     async def test_hermes_titles_reach_the_folder_chat_and_the_create_name_does_not(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1767,6 +2043,36 @@ class Skills(BridgeCase):
                 ob.read_skills(skills.parent)
             self.assertEqual(head.call_count, 1)  # three links back into the tree, one read
 
+    async def test_external_dirs_of_the_profile_config_are_listed_after_its_own(self):
+        """oh-my-hermes registers its skills in `skills.external_dirs` (not the profile's own folder): `skills.list`
+        reads those folders too, after the profile's own, as Hermes' skill scan does; a missing folder is skipped."""
+        async with Env() as env:
+            prof = env.home / "profiles" / "kami"
+            own = prof / "skills" / "plan"
+            own.mkdir(parents=True)
+            (own / "SKILL.md").write_text("---\nname: plan\ndescription: the bot's own\n---\n")
+            omh = env.home / "omh-skills"
+            for name, desc in (("omh-model-setup", "Model and provider configuration"), ("plan", "OMH's plan")):
+                (omh / "guide" / name).mkdir(parents=True)
+                (omh / "guide" / name / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n")
+            rel = prof / "more"
+            (rel / "x").mkdir(parents=True)
+            (rel / "x" / "SKILL.md").write_text("---\nname: relative-one\n---\n")
+            cfg = prof / "config.yaml"
+            cfg.write_text(cfg.read_text() + f"skills:\n  external_dirs:\n    - {omh}\n    - {env.home}/missing\n    - more\n    - {omh}\n")
+            before = self._tree(env.home)
+            s = await self.open(env)
+            got = {x["name"]: x["description"] for x in (await s.req("skills.list", bot="kami"))["result"]["skills"]}
+            self.assertEqual(sorted(got), ["omh-model-setup", "plan", "relative-one"])
+            self.assertEqual(got["plan"], "the bot's own")  # the profile's own folder wins, as in Hermes
+            self.assertEqual(got["omh-model-setup"], "Model and provider configuration")
+            self.assertEqual(self._tree(env.home), before)
+            self.assertEqual(env.connects, [])
+            # one entry as a plain string (Hermes reads a scalar too)
+            cfg.write_text(cfg.read_text().split("skills:")[0] + f"skills:\n  external_dirs: {omh}\n")
+            again = {x["name"] for x in (await s.req("skills.list", bot="kami"))["result"]["skills"]}
+            self.assertEqual(again, {"omh-model-setup", "plan"})
+
     async def test_no_skills_folder_and_unknown_bot(self):
         async with Env() as env:
             s = await self.open(env)
@@ -1831,6 +2137,25 @@ class ReplyThere(BridgeCase):
         self.assertEqual(rows[0]["text"], "post it")
         self.assertEqual(rows[0]["reply_to"], {"target": "slack:C1:1794.5", "label": "#og-dev"})
         self.assertNotIn("reply_to", rows[1])  # only the person's own rows carry a reference
+
+    def test_a_reopened_chat_shows_one_bubble_per_turn_its_answer(self):
+        """kami's real Bot Chat: a turn stores the commentary Hermes writes beside each tool call as assistant rows of
+        their own (14 of the 20 with text in one evening). The live chat shows only the answer; a reopened one too."""
+        rows = [{"role": "user", "text": "fix the tile", "row_id": 1},
+                {"role": "assistant", "text": "Now I'll implement it.", "tool_calls": [{"id": "a"}], "row_id": 2},
+                {"role": "tool", "text": "ok", "row_id": 3},
+                {"role": "assistant", "text": "", "tool_calls": [{"id": "b"}], "row_id": 4},
+                {"role": "assistant", "text": "All 35 tests pass. Committing.", "tool_calls": [{"id": "c"}], "row_id": 5},
+                {"role": "assistant", "text": "PR #2898 is up.", "row_id": 6},
+                {"role": "user", "text": "thanks", "row_id": 7},
+                {"role": "assistant", "text": "Merged.", "row_id": 8},
+                {"role": "user", "text": "still running?", "row_id": 9},
+                {"role": "assistant", "text": "Checking the logs.", "tool_calls": [{"id": "d"}], "row_id": 10}]
+        got = [(m["role"], m["text"]) for m in ob.chat_messages(rows)]
+        self.assertEqual(got, [("user", "fix the tile"), ("assistant", "PR #2898 is up."), ("user", "thanks"),
+                               ("assistant", "Merged."), ("user", "still running?"), ("assistant", "Checking the logs.")])
+        # opened while that last turn still runs: what it said so far is commentary, its answer comes live
+        self.assertEqual(ob.chat_messages(rows, running=True)[-1], {"id": "9", "role": "user", "text": "still running?", "ts": 0.0})
 
     async def test_elsewhere_list_carries_the_target_only_for_threads(self):
         async with Env(sessions=[dict(r) for r in self.SESSIONS]) as env:
@@ -2322,6 +2647,51 @@ class Runs(unittest.TestCase):
             self.assertEqual(got["handoffs"], {})
             self.assertFalse(any("outside the dag dir" in t for t in got["handoffs"].values()))
 
+    def test_a_running_run_quiet_for_a_day_with_no_helper_reporting_is_stale_not_live(self):
+        from datetime import datetime, timezone
+        v02 = "dag:20261108_213859_c9a97486/omher-v02"
+        with tempfile.TemporaryDirectory() as d:
+            prof, dag = _runs_profile(Path(d), ["20261108_213859_c9a97486"])
+            rec = next(dag.glob("*/omher-v02.json"))
+            updated = json.loads(rec.read_text(encoding="utf-8"))["updated_at"]
+            os.utime(rec, (updated, updated))  # the file changed when the record says it did
+            reader = ob.DagRuns(ob.Delegations(tz=timezone.utc))
+            one = lambda now: next(r for r in reader.list("kami", prof, now=now) if r["id"] == v02)
+            # ten minutes after its last change it is live
+            self.assertEqual((one(updated + 600)["state"], one(updated + 600).get("stale")), ("running", None))
+            # a day and a bit with no change: still "running" as the record says, but stale, and listed after
+            # every live run (a run settled since sorts by its own time as before)
+            quiet = one(updated + ob.QUIET_RUN + 60)
+            self.assertEqual((quiet["state"], quiet["stale"]), ("running", True))
+            self.assertEqual(quiet["counts"]["running"], 3)
+            # runs.get marks it the same way runs.list does
+            self.assertEqual(reader.get("kami", prof, v02)["run"].get("stale"), one(time.time()).get("stale"))
+            # the file itself changed since (a newer write than its updated_at): live again
+            os.utime(rec, (updated + ob.QUIET_RUN, updated + ob.QUIET_RUN))
+            self.assertNotIn("stale", one(updated + ob.QUIET_RUN + 60))
+            os.utime(rec, (updated, updated))
+            # a helper of one of its nodes still writing its log: live, however old the record
+            folder = prof / "cache" / "delegation" / "live" / "deleg_00aa11cc"
+            folder.mkdir(parents=True)
+            now = updated + 3 * ob.QUIET_RUN
+            started = datetime.fromtimestamp(now - 7200, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            (folder / "manifest.json").write_text(json.dumps({"started": started, "tasks": [
+                {"index": 0, "goal": "[dag:omher-v02/t2-attach] attach", "status": "running"}]}), encoding="utf-8")
+            (folder / "task-0.log").write_text(f"goal: attach\nstarted: {started}\n", encoding="utf-8")
+            for f in folder.iterdir():
+                os.utime(f, (now - 120, now - 120))
+            self.assertNotIn("stale", one(now))
+            # the same helper silent for over an hour (stalled): stale
+            for f in folder.iterdir():
+                os.utime(f, (now - ob.STALE_AFTER - 60, now - ob.STALE_AFTER - 60))
+            self.assertTrue(one(now)["stale"])
+
+    def test_only_running_dag_runs_can_be_stale(self):
+        run = {"id": "dag:s/x", "state": "done", "updated": 0.0, "nodes": []}
+        self.assertNotIn("stale", ob.mark_stale(dict(run), None, [], 10 * ob.QUIET_RUN))
+        self.assertTrue(ob.mark_stale(dict(run, state="running"), None, [], 10 * ob.QUIET_RUN)["stale"])
+        self.assertNotIn("stale", ob.mark_stale(dict(run, state="running"), None, [], ob.QUIET_RUN - 1))
+
     def test_no_dag_dir_or_no_state_db_means_no_runs(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(ob.DagRuns().list("kami", Path(d)), [])
@@ -2352,8 +2722,8 @@ class Runs(unittest.TestCase):
             prof, dag = _runs_profile(Path(d), sorted(sids), dag_src=real)
             runs = ob.DagRuns().list("kami", prof)
             self.assertGreaterEqual(len(runs), 1)
-            states = [r["state"] for r in runs]
-            self.assertEqual(states, sorted(states, key=lambda s: s != "running"))  # running first
+            live = [r["state"] == "running" and not r.get("stale") for r in runs]
+            self.assertEqual(live, sorted(live, reverse=True))  # live runs first (a stale one sorts by its time)
             got = ob.DagRuns().get("kami", prof, runs[0]["id"])
             self.assertEqual(len(got["run"]["nodes"]), runs[0]["counts"]["nodes"])
 
@@ -2587,11 +2957,11 @@ FIXED_NOW = 1793700000.0  # 2026-11-03, after both fixture sessions; `since=0` k
 
 
 def _cli_home(root: Path) -> dict[str, Path]:
-    """A copy of the redacted CLI fixtures as Claude Code and Codex homes; pi/omp/grok absent."""
+    """A copy of the redacted CLI fixtures as Claude Code and Codex homes; OmO (fixture at cli/omo), pi, omp, grok absent."""
     import shutil
     shutil.copytree(CLI_FIX, root / "cli")
     return {"claude": root / "cli" / "claude-home", "codex": root / "cli" / "codex",
-            "pi": root / "none-pi", "omp": root / "none-omp", "grok": root / "none-grok"}
+            "omo": root / "none-omo", "pi": root / "none-pi", "omp": root / "none-omp", "grok": root / "none-grok"}
 
 
 def _claude_layout(root: Path) -> Path:
@@ -2819,6 +3189,121 @@ class CliRunsCodex(unittest.TestCase):
         self.assertEqual(ob.CliRuns(self.homes, clock=lambda: FIXED_NOW).list("codex", None, 0.0)["runs"], [])
 
 
+class CliRunsOmo(unittest.TestCase):
+    """OmO's subagents from its own task records (real, redacted: OmO 5.1.56, two background subagents)."""
+
+    def test_the_real_records_are_one_session_run_with_each_subagents_answer_and_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            homes = _cli_home(Path(d))
+            homes["omo"] = Path(d) / "cli" / "omo"
+            before = _mtimes(Path(d) / "cli")
+            cli = ob.CliRuns(homes, clock=lambda: FIXED_NOW)
+            self.assertEqual(cli.agents()["omo"], "found")
+            listed = cli.list("omo", "/w/omo-proj", 0.0)["runs"]
+            self.assertEqual([r["id"] for r in listed], ["omo:01a1ca26-77fa-7eeb-a2ba-d23056b97a50"])
+            self.assertEqual((listed[0]["owner"], listed[0]["counts"]),
+                             ({"type": "session", "id": "01a1ca26-77fa-7eeb-a2ba-d23056b97a50"},
+                              {"nodes": 2, "done": 2, "running": 0, "failed": 0}))
+            run = cli.get(listed[0]["id"])["run"]
+            self.assertEqual([(n["label"], n["state"], n["summary"], n["model"], n["lane"]) for n in run["nodes"]],
+                             [("Report the first line of a.txt", "done", "alpha line", "claude-haiku-5-5", "explore"),
+                              (run["nodes"][1]["label"], "done", "2", "claude-haiku-5-5", run["nodes"][1]["lane"])])
+            self.assertTrue(all(n["started"] < n["ended"] for n in run["nodes"]))
+            self.assertEqual(cli.list("omo", "/w/elsewhere", 0.0)["runs"], [])
+            self.assertEqual(_mtimes(Path(d) / "cli"), before, "reading OmO's records changed a file")
+
+    def test_the_runs_time_is_its_first_subagents_start_to_its_last_ones_end(self):
+        # the chat card's rule (#2800): the fan-out runs from the first subagent's start to the last one's end. On the
+        # real records that is 10:28:41.062 -> 10:28:56.701, the span of the two rows the chat shows (9.9 s and
+        # 15.5 s by OmO's own duration_ms, starting 0.14 s apart)
+        with tempfile.TemporaryDirectory() as d:
+            homes = _cli_home(Path(d))
+            homes["omo"] = Path(d) / "cli" / "omo"
+            run = ob.CliRuns(homes, clock=lambda: FIXED_NOW).get("omo:01a1ca26-77fa-7eeb-a2ba-d23056b97a50")["run"]
+            self.assertEqual(run["started"], min(n["started"] for n in run["nodes"]))
+            self.assertEqual(run["ended"], max(n["ended"] for n in run["nodes"]))
+            self.assertAlmostEqual(run["ended"] - run["started"], 15.639, places=2)
+            self.assertEqual([round(n["ended"] - n["started"], 1) for n in run["nodes"]], [9.9, 15.5])
+
+    def test_a_running_record_quiet_for_over_10_minutes_failed_no_result(self):
+        with tempfile.TemporaryDirectory() as d:
+            homes = _cli_home(Path(d))
+            homes["omo"] = Path(d) / "cli" / "omo"
+            p = next((homes["omo"] / "agent" / "projects").glob("*/senpi-task/tasks/st_01a1ca28.json"))
+            r = json.loads(p.read_text())
+            r.update(status="running", terminal_at=None, final_response=None, updated_at="2026-01-01T00:00:00Z")
+            p.write_text(json.dumps(r))
+            run = ob.CliRuns(homes, clock=lambda: FIXED_NOW).get("omo:01a1ca26-77fa-7eeb-a2ba-d23056b97a50")["run"]
+            n = next(x for x in run["nodes"] if x["id"] == "st_01a1ca28")
+            self.assertEqual((n["state"], n["attempts"][0]["reason"]), ("failed", "no result"))
+
+
+class CliRunsOmoFolder(unittest.TestCase):
+    """O15: OmO keeps a folder's subagent records in that folder (`<folder>/.omo/senpi-task/tasks/`) when they are
+    already there, and OmO 5.0 always does. Real records (redacted: OmO 5.0.0-beta.65, two subagents that failed on
+    their first model and the two retries that answered), stored as `dot-omo/` because the repo ignores `.omo/`."""
+
+    SID = "01a1ce7e-2a44-78c8-9e51-05926dd01556"
+
+    def setUp(self):
+        import shutil
+        self._d = tempfile.TemporaryDirectory()
+        root = Path(self._d.name)
+        self.homes = _cli_home(root)
+        self.homes["omo"] = root / "omo-home"
+        (self.homes["omo"] / "agent" / "projects").mkdir(parents=True)
+        self.folder = root / "omo-folder"
+        shutil.copytree(CLI_FIX / "omo-folder" / "dot-omo", self.folder / ".omo")
+        for p in (self.folder / ".omo" / "senpi-task" / "tasks").glob("*.json"):
+            r = json.loads(p.read_text(encoding="utf-8"))
+            r["spawn_spec"] = {"cwd": str(self.folder)}
+            p.write_text(json.dumps(r), encoding="utf-8")
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def test_the_sessions_folder_records_are_its_run_with_each_answer(self):
+        before = _mtimes(self.folder)
+        cli = ob.CliRuns(self.homes, clock=lambda: FIXED_NOW)
+        listed = cli.list("omo", str(self.folder), 0.0)["runs"]
+        self.assertEqual([r["id"] for r in listed], [f"omo:{self.SID}"])
+        self.assertEqual(listed[0]["counts"], {"nodes": 4, "done": 2, "running": 0, "failed": 2})
+        run = cli.get(f"omo:{self.SID}")["run"]
+        self.assertEqual([(n["label"], n["state"]) for n in run["nodes"]],
+                         [("Report the first line of a.txt", "failed"), ("Report how many lines b.txt has", "failed"),
+                          ("Report the first line of a.txt", "done"), ("Report how many lines b.txt has", "done")])
+        self.assertIn("alpha line", run["nodes"][2]["summary"])
+        self.assertIn("3 lines", run["nodes"][3]["summary"])
+        self.assertEqual(_mtimes(self.folder), before, "reading OmO's records changed a file")
+
+    def test_another_folders_records_and_links_are_not_read(self):
+        cli = ob.CliRuns(self.homes, clock=lambda: FIXED_NOW)
+        # asked for another folder (or for none), the records inside this one are not read
+        self.assertEqual(cli.list("omo", str(Path(self._d.name) / "elsewhere"), 0.0)["runs"], [])
+        self.assertEqual(cli.list("omo", None, 0.0)["runs"], [])
+        # a linked .omo, or a linked senpi-task inside it, is skipped
+        for link in (".omo", "senpi-task"):
+            other = Path(self._d.name) / f"linked-{link.strip('.')}"
+            other.mkdir()
+            if link == ".omo":
+                (other / ".omo").symlink_to(self.folder / ".omo", target_is_directory=True)
+            else:
+                (other / ".omo").mkdir()
+                (other / ".omo" / "senpi-task").symlink_to(self.folder / ".omo" / "senpi-task", target_is_directory=True)
+            self.assertEqual(ob.CliRuns(self.homes, clock=lambda: FIXED_NOW).list("omo", str(other), 0.0)["runs"], [], link)
+
+
+class ClaudeAnswer(unittest.TestCase):
+    def test_a_subagents_answer_is_its_own_words_not_claude_codes_frame(self):
+        # Claude Code 2.1.322: the tool result wraps the subagent's words; toolUseResult.content has them alone
+        frame = ("[Subagent hand-back] The subagent finished. The report follows:\n```\nalpha line\n```\n"
+                 "agentId: a1 (use SendMessage to continue)")
+        self.assertEqual(ob._claude_answer({"content": [{"type": "text", "text": "alpha line"}]}, {"content": frame}), "alpha line")
+        self.assertEqual(ob._claude_answer({}, {"content": frame}), "alpha line")
+        used = "<tools-used-before-summary>Read a.txt</tools-used-before-summary>\n3 lines"
+        self.assertEqual(ob._claude_answer({"content": [{"type": "text", "text": used}]}, {}), "3 lines")
+
+
 class CliRunsAgents(unittest.TestCase):
     def test_pi_omp_and_grok_have_no_runs_and_say_why(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2864,6 +3349,9 @@ class CliRunsOps(BridgeCase):
             for bad in ({"agent": "cursor"}, {"cwd": ""}, {"since": "yesterday"}, {"since": True}):
                 self.assertEqual((await s.req("runs.cli", **bad))["error"]["code"], "bad_request", bad)
             self.assertEqual((await s.req("runs.get", bot="kami", run="codex:nope"))["error"]["code"], "not_found")
+            # a SESSIONS chat asks for its own run with no bot: a CLI run is found by its id alone
+            r = await s.req("runs.get", run=f"claude:{CLAUDE_SID}")
+            self.assertEqual(len(r["result"]["run"]["nodes"]), 3)
 
 
 class CliTitle(unittest.TestCase):
@@ -3287,3 +3775,442 @@ class VersionTest(unittest.TestCase):
         # hello's version is the app's: a release bump that misses the bridge fails here
         app = json.loads((HERE.parent.parent / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(ob.VERSION, app["version"])
+
+
+STUB_HERMES = r"""#!/bin/sh
+# omher test stub for `hermes`: records its argv, then answers like Hermes' restart does in $STUB_MODE.
+printf '%s\n' "$@" > "$STUB_LOG"
+printf 'HERMES_HOME=%s GW=%s\n' "$HERMES_HOME" "${_HERMES_GATEWAY:-}" >> "$STUB_LOG"
+case "$STUB_MODE" in
+  ok) echo "Profile '$2' restarted by the host gateway."; exit 0 ;;
+  refused)
+    for a in "$@"; do [ "$a" = "--yes" ] && { echo "⚠ --yes: restart proceeds: 2 live session(s) would be interrupted."; exit 0; }; done
+    echo "✗ Refusing to restart the gateway: 3 live session(s) would be interrupted."
+    echo "  • chat turn agent:kami:slack:dm:U1 pid 4242, running 3m [model claude-opus-5-5, tool terminal]"
+    echo "  • cron job a1b2 (PR digest) in-process, running 40s"
+    echo "  • chat turn agent:main:discord:group:C9 pid 4242, running 12s"
+    echo "  Let them finish, or interrupt them deliberately:"
+    echo "    hermes -p $2 gateway restart --yes   # interrupts 2 live session(s)"
+    exit 1 ;;
+  unconfirmed) echo "Profile '$2' restart was not confirmed: host control socket did not answer."; exit 0 ;;
+  *) echo "Starting gateway..."; echo "✗ Gateway service restart failed."; echo "  Fix the service, then retry"; exit 1 ;;
+esac
+"""
+
+
+class RestartArgv(unittest.TestCase):
+    """Rule 29: the restart is Hermes' own command with a fixed argv; the bot is one checked element."""
+
+    def test_fixed_argv_and_yes_only_when_asked(self):
+        self.assertEqual(ob.restart_argv("/h/hermes", "kami", False), ["/h/hermes", "-p", "kami", "gateway", "restart", "--detach"])
+        self.assertEqual(ob.restart_argv("/h/hermes", "kami", True)[-1], "--yes")
+        self.assertNotIn("--yes", ob.restart_argv("/h/hermes", "kami", "true"))  # only the boolean True
+        self.assertEqual(ob.restart_argv("/h/hermes", "default", False)[2], "default")
+
+    def test_names_hermes_would_refuse_are_refused_here(self):
+        for bad in ("Kami", "-p", "--all", "a b", "kami;rm -rf ~", "../x", "", "x" * 65, "kami\n", None, 3):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                ob.restart_argv("/h/hermes", bad, False)
+
+    def test_outcomes_read_from_hermes_text(self):
+        self.assertEqual(ob.restart_outcome(0, "Profile 'kami' restarted by the host gateway.\n"), {"outcome": "ok"})
+        r = ob.restart_outcome(1, "\x1b[31m✗ Refusing to restart the gateway: 1 live session(s) would be interrupted.\x1b[0m\n"
+                                  "  • chat turn s1 pid 9, running 2m\n  Let them finish, or interrupt them deliberately:\n")
+        self.assertEqual(r, {"outcome": "refused", "work": [{"kind": "chat", "name": None, "secs": 120, "bot": None}]})
+        # every shape Hermes' describe_active_work_unit prints, read without ids, pids or brackets
+        for line, want in (
+            ("chat turn agent:kami:slack:dm:U1 pid 4242, running 3m05s [model claude-opus-5-5, tool terminal]", ("chat", None, 185, "kami")),
+            ("chat turn agent:main:discord:group:C9, running 1m", ("chat", None, 60, "default")),
+            ("chat turn agent:main~:x pid 1, running 1s", ("chat", None, 1, "main")),
+            ("cron job a1b2 (PR digest) in-process, running 40s", ("cron", "PR digest", 40, "friren")),
+            ("cron job zz9 in external worker pid 77, running 1m00s", ("cron", None, 60, None)),
+            ("background delegation d9 pid 5, running 12s [fix the flaky test]", ("task", None, 12, None)),
+            ("tui run 20261112_1, running 2m", ("run", "tui", 120, None)),
+            ("webhook run agent:kami:hook:x pid 3, running 5s", ("run", "webhook", 5, "kami")),
+            ("something new from Hermes, running 7s", ("work", None, 7, None)),
+            # a shape Hermes adds later still says whose it is when it names the session; never from a word inside one
+            ("drain wait for agent:main:telegram:dm:9, running 2m", ("work", None, 120, "default")),
+            ("note xagent:kami:y", ("work", None, None, None)),
+            ("??", ("work", None, None, None)),
+        ):
+            u = ob.work_unit(line, {"a1b2": "friren"})
+            self.assertEqual((u["kind"], u["name"], u["secs"], u["bot"]), want, line)
+        r = ob.restart_outcome(0, "Profile 'kami' restart was not confirmed: host operation is still pending.\n")
+        self.assertEqual(r["outcome"], "failed")
+        self.assertIn("not confirmed", r["line"])
+        self.assertEqual(ob.restart_outcome(None, "")["outcome"], "failed")
+        self.assertEqual(ob.restart_outcome(78, "✗ The host gateway already serves profile 'kami'.\n  more\n")["line"],
+                         "The host gateway already serves profile 'kami'.")
+
+    def test_which_gateway_serves_a_bot_and_who_goes_down_with_it(self):
+        with tempfile.TemporaryDirectory() as t:
+            home = Path(t)
+            (home / "config.yaml").write_text("model: m\n")
+            for n, cfg in (("kami", ""), ("solo", "gateway:\n  standalone: true\n"), ("parked", ""), ("friren", ""), ("own", "")):
+                (home / "profiles" / n).mkdir(parents=True)
+                (home / "profiles" / n / "config.yaml").write_text("model: m\n" + cfg)
+            (home / "profiles" / "parked" / "gateway.parked").write_text("")
+            own = home / "profiles" / "own"
+            # a live gateway of its own, as Hermes' gateway.status.live_gateway_pid_for_home proves it
+            with mock.patch.object(ob, "_hermes_gateway_pid", side_effect=lambda h: 4242 if Path(h) == own else None):
+                self.assertEqual([ob.gateway_of(home, n) for n in ("kami", "solo", "default", "own", "ghost")],
+                                 ["default", "solo", "default", "own", "default"])
+                self.assertEqual([o["name"] for o in ob.gateway_bots(home, "default")], ["default", "friren", "kami"])
+                self.assertEqual([o["name"] for o in ob.gateway_bots(home, "solo")], ["solo"])
+            # a live host's own record of what it serves wins over the reading of configs
+            with mock.patch.object(ob, "_hermes_served", return_value=["default", "kami"]):
+                self.assertEqual([o["name"] for o in ob.gateway_bots(home, "default")], ["default", "kami"])
+            # never `-p <served bot>`: that would be one profile's unserve/serve inside the host
+            self.assertEqual(ob.restart_argv("/h/hermes", ob.gateway_of(home, "kami"), False)[2], "default")
+
+    def test_plugin_load_follows_hermes_answer(self):
+        self.assertEqual(ob.plugin_load({"restart_required": False, "gateway_reloaded": True}), "live")
+        self.assertEqual(ob.plugin_load({"restart_required": True, "gateway_reloaded": False}), "reload")
+        self.assertEqual(ob.plugin_load({"restart_required": True, "gateway_reloaded": True,
+                                         "activation": {"missing_dependencies": ["numpy"], "missing_in": ["gateway"]}}), "restart")
+        self.assertEqual(ob.plugin_load({"restart_required": True, "gateway_reloaded": True,
+                                         "activation": {"missing_dependencies": ["numpy"], "missing_in": ["backend"]}}), "live")
+
+
+@unittest.skipIf(os.name == "nt", "the stub `hermes` is a POSIX shell script")
+class RestartThroughStubHermes(BridgeCase):
+    """The real `bots.restart` op against a stub `hermes` on a scratch PATH: ok, refused with live work (then
+    "Restart anyway"), failed. Never a real Hermes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = Path(self.tmp.name)
+        stub = d / "hermes"
+        stub.write_text(STUB_HERMES)
+        stub.chmod(0o755)
+        self.log = d / "argv.txt"
+        self.env = {"PATH": f"{d}{os.pathsep}/usr/bin{os.pathsep}/bin", "STUB_LOG": str(self.log),
+                    "_HERMES_GATEWAY": "1"}
+
+    def argv(self) -> list[str]:
+        return self.log.read_text().splitlines()
+
+    async def restart(self, s, mode, **params):
+        with mock.patch.dict(os.environ, {**self.env, "STUB_MODE": mode}):
+            return await s.req("bots.restart", **params)
+
+    async def test_ok_restarts_the_host_gateway_and_reattaches_every_bot_on_it(self):
+        with mock.patch.object(ob, "RESTART_POLL", 0.01):
+            async with Env(("kami", "friren")) as env:
+                s = await self.open(env)
+                await s.req("chat.open", bot="kami")
+                r = await self.restart(s, "ok", bot="kami")
+                self.assertEqual(r["result"], {"outcome": "ok", "bots": ["default", "friren", "kami"]})
+                argv = self.argv()
+                # kami is served by the host: the host gateway's process restarts, never `-p kami` (unserve/serve)
+                self.assertEqual(argv[:5], ["-p", "default", "gateway", "restart", "--detach"])  # the stub logs "$@"
+                self.assertEqual(len(argv), 6)  # no --yes on the first press
+                self.assertEqual(argv[5], f"HERMES_HOME={env.home} GW=")  # Hermes root, no gateway marker
+                await s.until(lambda ev: {e["bot"] for e in ev if e["event"] == "bot.restarted"} >= {"default", "friren", "kami"})
+                done = sorted(e["bot"] for e in s.events if e["event"] == "bot.restarted" and e["ok"])
+                self.assertEqual(done, ["default", "friren", "kami"])
+                self.assertEqual(env.connects.count("kami"), 2)  # the old connection dropped, a new one attached
+
+    async def test_a_sticky_active_profile_never_changes_which_gateway_restarts(self):
+        # Without -p Hermes follows `<root>/active_profile` (hermes_cli/main.py:525-536); omher names the profile on
+        # every call, so a sticky non-default profile cannot turn the host's restart into kami's unserve/serve.
+        with mock.patch.object(ob, "RESTART_POLL", 0.01):
+            async with Env(("kami", "friren")) as env:
+                (env.home / "active_profile").write_text("kami\n")
+                s = await self.open(env)
+                for bot in ("friren", "default"):
+                    r = await self.restart(s, "ok", bot=bot)
+                    self.assertEqual(r["result"]["outcome"], "ok")
+                    self.assertEqual(self.argv()[:2], ["-p", "default"], bot)
+                    await s.until(lambda ev: sum(e["event"] == "bot.restarted" for e in ev) >= 3)
+                    s.events.clear()
+
+    async def test_a_standalone_bot_restarts_its_own_gateway_alone(self):
+        with mock.patch.object(ob, "RESTART_POLL", 0.01):
+            async with Env(("kami", "solo")) as env:
+                (env.home / "profiles" / "solo" / "config.yaml").write_text("model: m\ngateway:\n  standalone: true\n")
+                s = await self.open(env)
+                r = await self.restart(s, "ok", bot="solo")
+                self.assertEqual(r["result"], {"outcome": "ok", "bots": ["solo"]})
+                self.assertEqual(self.argv()[:5], ["-p", "solo", "gateway", "restart", "--detach"])
+                r = await s.req("bots.restart_scope", bot="solo")
+                self.assertEqual(r["result"], {"gateway": "solo", "bots": [{"name": "solo", "display_name": "Solo"}]})
+
+    async def test_refused_names_the_live_work_then_restart_anyway_adds_yes(self):
+        async with Env(("kami", "friren")) as env:
+            (env.home / "profiles" / "friren" / "cron").mkdir()
+            (env.home / "profiles" / "friren" / "cron" / "jobs.json").write_text('{"jobs": [{"id": "a1b2", "name": "PR digest"}]}')
+            s = await self.open(env)
+            r = await s.req("bots.restart", bot="kami", interrupt=True)
+            self.assertEqual(r["error"]["code"], "bad_request")  # --yes never comes first
+            r = await self.restart(s, "refused", bot="kami")
+            self.assertEqual(r["result"]["outcome"], "refused")
+            # each line says whose it is: a chat by its session key, a cron run by the jobs.json that holds it
+            self.assertEqual(r["result"]["work"], [
+                {"kind": "chat", "name": None, "secs": 180, "bot": "kami"},
+                {"kind": "cron", "name": "PR digest", "secs": 40, "bot": "friren"},
+                {"kind": "chat", "name": None, "secs": 12, "bot": "default"}])
+            self.assertNotIn("lines", r["result"])
+            self.assertNotIn("--yes", self.argv())
+            with mock.patch.object(ob, "RESTART_POLL", 0.01):
+                r = await self.restart(s, "refused", bot="kami", interrupt=True)
+            self.assertEqual(r["result"]["outcome"], "ok")
+            self.assertEqual(self.argv()[5], "--yes")
+            r = await s.req("bots.restart", bot="kami", interrupt=True)
+            self.assertEqual(r["error"]["code"], "bad_request")  # one refusal, one "anyway"
+
+    async def test_failed_shows_hermes_last_line(self):
+        async with Env(("kami",)) as env:
+            s = await self.open(env)
+            r = await self.restart(s, "broken", bot="kami")
+            self.assertEqual(r["result"], {"outcome": "failed", "line": "Gateway service restart failed."})
+            r = await self.restart(s, "unconfirmed", bot="kami")
+            self.assertEqual(r["result"]["outcome"], "failed")
+            self.assertEqual(env.connects, [])  # a failed restart attaches nothing
+
+    async def test_only_known_bots_and_the_default_names_who_goes_down(self):
+        async with Env(("kami", "friren")) as env:
+            s = await self.open(env)
+            self.assertEqual((await self.restart(s, "ok", bot="ghost"))["error"]["code"], "unknown_bot")
+            self.assertFalse(self.log.exists())
+            r = await s.req("bots.restart_scope", bot="default")
+            self.assertEqual(r["result"]["gateway"], "default")
+            self.assertEqual([o["name"] for o in r["result"]["bots"]], ["default", "friren", "kami"])
+            r = await s.req("bots.restart_scope", bot="kami")  # a served bot: the same host, the same bots
+            self.assertEqual((r["result"]["gateway"], [o["name"] for o in r["result"]["bots"]]), ("default", ["default", "friren", "kami"]))
+
+
+class PluginReload(BridgeCase):
+    async def test_reload_reports_live_restart_or_failed(self):
+        answers = {"live": {"reloaded": True, "activations": [{"name": "omh", "key": "omh"}]},
+                   "deps": {"reloaded": True, "activations": [{"name": "omh", "key": "omh", "missing_dependencies": ["numpy"]}]},
+                   "none": None, "refused": {"reloaded": False, "error": "home is not served by this gateway"}}
+        async with Env(("kami",)) as env:
+            s = await self.open(env)
+            for case, want in (("live", "live"), ("deps", "restart"), ("none", "failed"), ("refused", "failed")):
+                with mock.patch.object(ob, "reload_plugins", return_value=answers[case]) as rp:
+                    r = (await s.req("plugins.reload", bot="kami", name="omh"))["result"]
+                self.assertEqual(r["load"], want, case)
+                rp.assert_called_once_with(env.home / "profiles" / "kami", env.home)
+            self.assertEqual(env.connects, [])  # a reload never attaches or restarts
+
+
+class Peers(BridgeCase):
+    """BOUNDARY rule 31: a second, real bridge on loopback stands in for the other computer's (its gateway is a
+    FakeClient). The local bridge attaches it, lists its bots as `<peer>:<name>`, forwards bot-scoped ops with the
+    bare name, passes its events back under the namespaced name and refuses what needs this computer."""
+
+    PEER_TOKEN = "ab" * 16
+
+    async def _two(self, stack):
+        local = await stack.enter_async_context(Env(("kami",)))
+        remote = Env(("mini", "default-two"))
+        remote.bridge = ob.Bridge(token=self.PEER_TOKEN, hermes_home=remote.home, gateway_factory=remote.factory, poll_s=3600)
+        await stack.enter_async_context(remote)
+        url = f"ws://127.0.0.1:{remote.port}/?token={self.PEER_TOKEN}"
+        return local, remote, url
+
+    async def _attach(self, s, url, peer="mac"):
+        r = await s.req("peers.attach", peer=peer, label="Mac mini", host="sionic@10.1.145.204", url=url)
+        self.assertTrue(r["ok"], r)
+        return r["result"]
+
+    async def test_attach_lists_the_peers_bots_namespaced_with_an_ssh_host(self):
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            s = await self.open(local)
+            probe = await s.req("peers.probe", url=url)
+            self.assertTrue(probe["ok"], probe)
+            self.assertEqual(sorted(b["name"] for b in probe["result"]["bots"]), ["default", "default-two", "mini"])
+            self.assertEqual(remote.connects, [])  # a probe reads hello and bots.list only: no gateway attached
+            got = await self._attach(s, url)
+            self.assertEqual(sorted(b["name"] for b in got["bots"]), ["mac:default", "mac:default-two", "mac:mini"])
+            await s.until(lambda ev: any(e["event"] == "bots.update" for e in ev))
+            bots = (await s.req("bots.list"))["result"]["bots"]
+            by = {b["name"]: b for b in bots}
+            self.assertIn("kami", by)
+            self.assertNotIn("host", by["kami"])  # a local bot has no host field
+            self.assertEqual(by["mac:mini"]["host"], {"kind": "ssh", "peer": "mac", "label": "Mac mini", "host": "sionic@10.1.145.204"})
+            self.assertEqual(remote.connects, [])  # listing never starts a remote gateway
+
+    async def test_bot_ops_are_forwarded_with_the_bare_name_and_events_come_back_namespaced(self):
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            s = await self.open(local)
+            await self._attach(s, url)
+            r = await s.req("chat.open", bot="mac:mini")
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["result"]["session_id"], MAIN_RUNTIME)
+            self.assertEqual(remote.connects, ["mini"])
+            self.assertEqual(local.connects, [])  # nothing local attached for a remote bot
+            r = await s.req("chat.send", bot="mac:mini", text="hi there")
+            self.assertTrue(r["ok"], r)
+            sub = remote.clients["mini"].find("prompt.submit")
+            self.assertEqual([x["text"] for x in sub], ["hi there"])
+            c = remote.clients["mini"]
+            c.push("message.start", {})
+            c.push("message.delta", {"text": "hel"})
+            c.push("message.complete", {"text": "hello", "status": "complete"})
+            await s.until(lambda ev: any(e["event"] == "turn.end" for e in ev))
+            ev = [e for e in s.events if e["event"] in ("turn.start", "delta", "message", "turn.end")]
+            self.assertEqual([e["event"] for e in ev], ["turn.start", "delta", "message", "turn.end"])
+            self.assertTrue(all(e["bot"] == "mac:mini" for e in ev), ev)
+            r = await s.req("models.options", bot="mac:mini")
+            self.assertTrue(r["ok"], r)
+            # a name the peer does not have, or a peer that is not attached
+            self.assertEqual((await s.req("chat.open", bot="mac:ghost"))["error"]["code"], "unknown_bot")
+            self.assertEqual((await s.req("chat.open", bot="nope:mini"))["error"]["code"], "unknown_bot")
+            self.assertEqual((await s.req("chat.open", bot="mac:a:b"))["error"]["code"], "unknown_bot")
+
+    async def test_remote_display_history_keeps_the_remote_main_chat_scope(self):
+        from contextlib import AsyncExitStack
+        from test_chat_history import TranscriptClient
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            conn = await remote.bridge._conn("mini")
+            conn.client = client = TranscriptClient("mini")
+            s = await self.open(local)
+            await self._attach(s, url)
+            opened = await s.req("chat.open", bot="mac:mini")
+            self.assertTrue(opened["ok"], opened)
+            cursor = opened["result"]["history"]["cursor"]
+            older = await s.req("chat.history", bot="mac:mini", cursor=cursor, session_id="foreign")
+            self.assertTrue(older["ok"], older)
+            self.assertEqual([m["text"] for m in older["result"]["messages"]], ["earlier", "reply"])
+            self.assertEqual(client.find("session.transcript")[-1]["session_id"], MAIN_RUNTIME)
+            self.assertFalse(client.find("prompt.submit"))
+            self.assertEqual(local.connects, [])
+
+    async def test_ops_that_need_this_computer_are_refused_with_a_reason(self):
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            s = await self.open(local)
+            await self._attach(s, url)
+            for op, extra in (("folder.open", {"cwd": "/tmp"}), ("folder.close", {"session": "f1"}),
+                              ("bots.restart", {}), ("chat.send", {"text": "x", "session": "f1"})):
+                r = await s.req(op, bot="mac:mini", **extra)
+                self.assertFalse(r["ok"], op)
+                self.assertEqual(r["error"]["code"], "remote_bot", op)
+                self.assertIn("Mac mini", r["error"]["message"])
+            scope = (await s.req("bots.restart_scope", bot="mac:mini"))["result"]
+            self.assertEqual(scope["gateway"], "mac:mini")
+            # ops that are not bot-scoped never reach the peer: usage and accounts are this computer's own
+            for op in ("usage.read", "accounts.list", "cli.title", "runs.cli"):
+                self.assertNotIn(op, ob.PEER_FORWARD)
+            self.assertEqual(remote.connects, [])
+
+    async def test_media_comes_as_bytes_over_the_link_and_is_marked_remote(self):
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            prof = remote.home / "profiles" / "mini"
+            pic = prof / "out.png"
+            pic.write_bytes(b"\x89PNG-remote")
+            import sqlite3
+            con = sqlite3.connect(prof / "state.db")
+            con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, title TEXT)")
+            con.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT)")
+            con.execute("INSERT INTO sessions VALUES ('main', 'tui', ?)", (ob.BOT_CHAT_TITLE,))
+            con.execute("INSERT INTO messages (session_id, role, content) VALUES ('main', 'assistant', ?)", (f"MEDIA:{pic}",))
+            con.commit()
+            con.close()
+            s = await self.open(local)
+            await self._attach(s, url)
+            r = await s.req("media.read", bot="mac:mini", path=str(pic))
+            self.assertTrue(r["ok"], r)
+            import base64
+            self.assertEqual(base64.b64decode(r["result"]["data_base64"]), b"\x89PNG-remote")
+            self.assertIs(r["result"]["remote"], True)  # the app must not open that path on this computer
+
+    async def test_a_dropped_link_ends_the_live_turn_as_stopped_and_sends_nothing_again(self):
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            s = await self.open(local)
+            await self._attach(s, url)
+            await s.req("chat.open", bot="mac:mini")
+            await s.req("chat.send", bot="mac:mini", text="long job")
+            remote.clients["mini"].push("message.start", {})
+            await s.until(lambda ev: any(e["event"] == "turn.start" and e["bot"] == "mac:mini" for e in ev))
+            await remote.bridge.close()  # the other computer's bridge goes away mid-turn
+            await s.until(lambda ev: any(e["event"] == "turn.end" and e["bot"] == "mac:mini" for e in ev))
+            end = [e for e in s.events if e["event"] == "turn.end" and e["bot"] == "mac:mini"]
+            self.assertEqual(len(end), 1)
+            self.assertEqual(end[0]["outcome"], "interrupted")
+            self.assertIn("Mac mini", end[0]["error"])
+            await s.until(lambda ev: any(e["event"] == "bot.status" and e["bot"] == "mac:mini" and e["status"] == "offline" for e in ev))
+            self.assertEqual(len(remote.clients["mini"].find("prompt.submit")), 1)  # never resent
+            bots = {b["name"]: b for b in (await s.req("bots.list"))["result"]["bots"]}
+            self.assertEqual(bots["mac:mini"]["status"], "offline")
+            self.assertFalse(bots["mac:mini"]["running"])
+            r = await s.req("chat.send", bot="mac:mini", text="again")
+            self.assertEqual(r["error"]["code"], "bot_offline")
+
+    async def test_detach_drops_the_bots_and_bad_attach_args_are_refused(self):
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            s = await self.open(local)
+            for bad in ({"peer": "Bad", "label": "x", "host": "h", "url": url},
+                        {"peer": "fold", "label": "x", "host": "h", "url": url},
+                        {"peer": "mac", "label": "", "host": "h", "url": url},
+                        {"peer": "mac", "label": "x", "host": "-oProxyCommand=x", "url": url},
+                        {"peer": "mac", "label": "x", "host": "h", "url": "ws://10.0.0.1:1/?token=" + "a" * 32},
+                        {"peer": "mac", "label": "x", "host": "h", "url": "wss://127.0.0.1:1/"}):
+                r = await s.req("peers.attach", **bad)
+                self.assertEqual(r["error"]["code"], "bad_request", bad)
+            await self._attach(s, url)
+            r = await s.req("peers.detach", peer="mac")
+            self.assertTrue(r["ok"])
+            names = [b["name"] for b in (await s.req("bots.list"))["result"]["bots"]]
+            self.assertEqual([n for n in names if ":" in n], [])
+            self.assertIn("kami", names)
+            dead = "ws://127.0.0.1:1/?token=" + "c" * 32
+            r = await s.req("peers.attach", peer="mac", label="Mac mini", host="mini", url=dead)
+            self.assertEqual(r["error"]["code"], "peer_unreachable")
+
+    async def test_automations_of_a_peer_are_listed_under_its_namespace(self):
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            local, remote, url = await self._two(stack)
+            jobs = remote.home / "profiles" / "mini" / "cron"
+            jobs.mkdir(parents=True)
+            (jobs / "jobs.json").write_text(json.dumps({"jobs": [{"id": "j1", "name": "Nightly", "schedule": {"display": "every 1d"},
+                                                                    "prompt": "x", "deliver": "bot-chat:mini", "enabled": True}]}))
+            s = await self.open(local)
+            await self._attach(s, url)
+            autos = (await s.req("automations.list"))["result"]["automations"]
+            mine = [a for a in autos if a["bot"].startswith("mac:")]
+            self.assertEqual([(a["bot"], a["id"], a["deliver"]) for a in mine], [("mac:mini", "j1", "bot-chat:mac:mini")])
+
+
+class PeerHint(BridgeCase):
+    """A message asking to connect a bot on another computer gets one `[omher]` note so the bot answers with an
+    `omher-peer` block; any other message is sent as typed, and the note never shows back as the person's words."""
+
+    def test_which_messages_get_the_note(self):
+        yes = ("맥미니 헤르메스 붙여줘", "ssh로 붙여줘", "connect the hermes on my mac mini over ssh",
+               "add the bot on another computer", "リモートのHermesを接続して", "把另一台电脑的机器人连接上")
+        no = ("오늘 날씨 알려줘", "sshd 설정 봐줘", "원격 서버 로그 봐줘", "ssh 키 만들어줘", "deploy to the server",
+              "```omher-peer {\"host\": \"mini\"}``` 이거 맞아?")
+        for t in yes:
+            self.assertTrue(ob.peer_hint_wanted(t), t)
+        for t in no:
+            self.assertFalse(ob.peer_hint_wanted(t), t)
+
+    async def test_the_note_rides_the_turn_and_is_stripped_on_read(self):
+        async with Env() as env:
+            s = await self.open(env)
+            await s.req("chat.open", bot="kami")
+            await s.req("chat.send", bot="kami", text="맥미니 헤르메스 붙여줘")
+            await s.req("chat.send", bot="kami", text="hello")
+            sent = [x["text"] for x in env.clients["kami"].find("prompt.submit")]
+            self.assertEqual(sent[0], "맥미니 헤르메스 붙여줘\n\n" + ob.PEER_HINT)
+            self.assertEqual(sent[1], "hello")
+            self.assertIn("```omher-peer", ob.PEER_HINT)
+            rows = ob.chat_messages([{"role": "user", "text": sent[0], "row_id": 9}])
+            self.assertEqual(rows[0]["text"], "맥미니 헤르메스 붙여줘")

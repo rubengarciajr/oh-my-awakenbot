@@ -8,11 +8,12 @@
 // column, where you can drag a box (its position only, kept per run), pan, zoom and Fit. The only motion is the
 // boxes appearing one by one, a slow dash riding the edges into a running node, and a box answering the pointer.
 // Nothing here changes a run.
+import { harnessByName } from "../harness/registry";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as RPE, type ReactNode } from "react";
 import type { AgentRun } from "../lib/runs";
 import { t } from "../i18n";
 import { AgentIcon, ModelIcon, PrIcon } from "../ui";
-import { boxText, durationOf, estimate, factsOf, GEOMETRY, layoutBoxes, movedLines, statusOf, titleOf, titleParts, type BoxLayout, type Mark, type Measure, type Rect, type StatusIcon } from "./boxView";
+import { boxText, durationOf, estimate, factsOf, GEOMETRY, layoutBoxes, movedLines, statusOf, titleOf, titleParts, waitRows, type BoxLayout, type Mark, type Measure, type Rect, type StatusIcon } from "./boxView";
 import { reducedMotion } from "./format";
 import { openPr, prLabel, prLink, prState, prText } from "./pr";
 import type { NodePr } from "../lib/runs";
@@ -28,7 +29,7 @@ export interface BotModel {
 export const FONT = { title: "500 13px var(--font)", text: "400 12px var(--font)" };
 /** The panel shows this many rows of a long frontier before "Show all". */
 export const PANEL_CAP_ROWS = 8;
-/** The Dependencies list shows this many edges before "Show all". */
+/** The Dependencies list shows this many rows (one per node that waits) before "Show all". */
 export const DEPS_CAP = 12;
 const STAGGER = 60;
 const MAX_ENTRANCE = 900;
@@ -67,7 +68,13 @@ export const measureText: Measure = (text, font) => {
 const ICONS: Record<StatusIcon | "repair", ReactNode> = {
   check: <path d="M20 6 9 17l-5-5" />,
   x: <path d="M18 6 6 18M6 6l12 12" />,
-  dot: <circle cx="12" cy="12" r="5.5" fill="currentColor" stroke="none" />,
+  dot: (
+    // a running node: a spinner, an arc turning on a faint track (runs.css spins `.bx-spin`), so a node at work moves
+    <>
+      <circle cx="12" cy="12" r="8" strokeWidth="3" opacity="0.2" />
+      <path className="bx-spin" d="M12 4a8 8 0 0 1 8 8" strokeWidth="3" />
+    </>
+  ),
   ring: <circle cx="12" cy="12" r="7.5" />,
   dashed: <circle cx="12" cy="12" r="7.5" strokeDasharray="2.9 3" />,
   alert: (
@@ -106,7 +113,12 @@ export function NodeMark({ mark }: { mark: Mark | null }) {
   if (!mark) return null;
   return (
     <span className="bx-mk" data-testid="node-mark" data-mark={mark.id} data-kind={mark.kind}>
-      {mark.kind === "model" ? <ModelIcon model={mark.model} provider={mark.provider} size={GEOMETRY.mark} /> : <AgentIcon id={mark.id} size={GEOMETRY.mark} />}
+      {mark.kind === "model" ? (
+        <ModelIcon model={mark.model} provider={mark.provider} size={GEOMETRY.mark} />
+      ) : (
+        // the agent CLI the lane went to, by the one harness registry's id for it (`claude-code` → claude)
+        <AgentIcon id={harnessByName(mark.id) ?? mark.id} size={GEOMETRY.mark} />
+      )}
     </span>
   );
 }
@@ -267,10 +279,13 @@ export function RunGraph({
         const k0 = Math.min(MAX_FIT, el.clientWidth / (maxX - minX));
         if ((el.clientWidth + (maxX - minX) * k0) / 2 <= el.clientWidth - reserve) W = el.clientWidth;
       }
-      const want = Math.min(W / (maxX - minX), whole ? el.clientHeight / (maxY - minY) : Infinity);
+      // the drawing starts at the plan header's left edge (the x of the plan title), as the text above it does
+      const title = el.closest('[data-testid="run-graph-box"]')?.querySelector<HTMLElement>('[data-testid="run-plan-title"]');
+      const lead = title ? Math.max(0, title.getBoundingClientRect().left - el.getBoundingClientRect().left) : MARGIN;
+      const want = Math.min((W - lead) / (maxX - minX - MARGIN), whole ? el.clientHeight / (maxY - minY) : Infinity);
       const k = Math.min(MAX_FIT, Math.max(MIN_FIT, want));
       const sel = openRef.current && lay.at.has(openRef.current) ? rect(openRef.current) : null;
-      if (want >= MIN_FIT || !sel) return setView({ k, x: (W - (maxX - minX) * k) / 2 - minX * k, y: -minY * k });
+      if (want >= MIN_FIT || !sel) return setView({ k, x: lead - (minX + MARGIN) * k, y: -minY * k });
       // too wide to show whole next to the drawer: keep the open box in view
       setView({ k, x: W / 2 - (sel.x + sel.w / 2) * k, y: Math.min(-minY * k, el.clientHeight / 2 - (sel.y + sel.h / 2) * k) });
     },
@@ -395,8 +410,9 @@ export function RunGraph({
     return s;
   }, [hover, lay]);
 
-  const deps = lay.shape.edges;
+  const deps = useMemo(() => waitRows(lay.shape), [lay]);
   const shownDeps = allDeps || deps.length <= DEPS_CAP + 2 ? deps : deps.slice(0, DEPS_CAP);
+  const nameOf = (id: string) => titleOf(byId.get(id)!);
   const live = lay.boxes.map((b) => byId.get(b.id)!).filter((n) => n.state === "running" && n.id !== open);
 
   const texts = new Map(lay.boxes.map((b) => [b.id, boxText(byId.get(b.id)!, run, lay, lay.inner, nowS, measureText, bot)]));
@@ -526,17 +542,57 @@ export function RunGraph({
     <div className="bv-secs" style={mode === "full" && lay.boxes.length ? { marginLeft: Math.min(...lay.boxes.map((b) => b.x)) } : undefined} onPointerDown={(e) => e.stopPropagation()}>
       {deps.length > 0 && (
         <section className="bv-sec" data-testid="run-deps" aria-label={t("graph.deps")}>
-          <h4>{t("graph.deps")}</h4>
-          {shownDeps.map((e) => (
-            <div key={`${e.from}>${e.to}`} className="bv-dep" data-testid="run-dep" data-from={e.from} data-to={e.to} title={`${titleOf(byId.get(e.from)!)} → ${titleOf(byId.get(e.to)!)}`}>
-              <span className="bv-dep-n">{titleOf(byId.get(e.from)!)}</span>
-              <svg className="bv-arrow" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" role="img" aria-label="→">
-                <path d="M5 12h14M13 6l6 6-6 6" />
-              </svg>
-              <span className="bv-dep-n">{titleOf(byId.get(e.to)!)}</span>
-              {e.kind === "repair" && <span className="bx-dim"> ({t("graph.repair")})</span>}
-            </div>
-          ))}
+          <h4>
+            {t("graph.deps")}
+            <span className="bx-dim"> · {t("graph.depRows", { n: deps.length })}</span>
+          </h4>
+          {shownDeps.map((r) => {
+            const st = statusOf(byId.get(r.id)!, run);
+            const through = r.through.length ? t("graph.through", { n: r.through.length }) : "";
+            const full = [...r.on.map((o) => nameOf(o.id)), ...r.through.map(nameOf)].join(", ");
+            return (
+              <div
+                key={r.id}
+                className={`bv-dep s-${st.tone}${hover === r.id ? " on" : ""}`}
+                data-testid="run-dep"
+                data-node={r.id}
+                data-on={r.on.map((o) => o.id).join(" ")}
+                data-through={r.through.join(" ")}
+                title={`${nameOf(r.id)} ${t("graph.waitsFor")}: ${full}`}
+                onMouseEnter={() => setHover(r.id)}
+                onMouseLeave={() => setHover(null)}
+                onClick={() => onOpen(r.id)}
+              >
+                <span className="bv-dep-t">
+                  <StatusGlyph icon={st.icon} label={st.word} />
+                  <span className="bv-dep-n">{nameOf(r.id)}</span>
+                </span>
+                <span className="bv-dep-on">
+                  <span className="bv-dep-k">{t("graph.waitsFor")}</span>
+                  <span className="bv-dep-l">
+                    {r.on.map((o, i) => {
+                      const ps = statusOf(byId.get(o.id)!, run);
+                      const last = i === r.on.length - 1 && !through;
+                      // a "·" stays with the name before it: a wrapped line starts with a status icon, under the first
+                      return (
+                        <span key={o.id} className={`bv-dep-p s-${ps.tone}`} data-testid="run-dep-on" data-node={o.id}>
+                          <StatusGlyph icon={ps.icon} label={ps.word} />
+                          {nameOf(o.id)}
+                          {o.kind === "repair" && <span className="bx-dim"> ({t("graph.repair")})</span>}
+                          {!last && <span className="bv-dep-k"> ·</span>}
+                        </span>
+                      );
+                    })}
+                    {through && (
+                      <span className="bv-dep-p bx-dim" title={r.through.map(nameOf).join(", ")}>
+                        {through}
+                      </span>
+                    )}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
           {deps.length > DEPS_CAP + 2 && (
             <button type="button" className="bv-more inline" onClick={() => setAllDeps((v) => !v)} data-testid="run-deps-more">
               {allDeps ? t("graph.fewer") : `${t("graph.more", { n: deps.length - DEPS_CAP })} · ${t("graph.all", { n: deps.length })}`}

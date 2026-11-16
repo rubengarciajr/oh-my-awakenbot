@@ -284,7 +284,10 @@ is the one file there a model writes, and it passes. The same hook holds a
 dag-ulw node's child, and any child it spawns, to that node's `write_scope`
 for `write_file` and `patch` inside the workspace `omh_dag define` pinned
 (`plugin_bundle/omh/dag_scope_guard.py`); a parent, an ordinary child, a node
-with no scope, and a settled node or cancelled run are not held. A shell
+with no scope, and a settled node or cancelled run are not held. A node defined
+`read_only` (refused at define beside a `write_scope`) is held tighter: its
+child's `write_file` and `patch` inside that workspace are blocked except its
+own handoff report, where it writes its findings instead. A shell
 command appending to the same file is not judged. An unknown `[omh-role:...]` marker in a delegate goal is warned in
 the child's own turn by `pre_llm_call`, since Hermes reads only `action` from a
 `pre_tool_call` result. A `[omh-identity:name]` marker in the person's request
@@ -300,7 +303,9 @@ remains available in the machine-readable payload but is not shown in the
 Hermes-facing status line.
 It intentionally omits install inventory such as managed skill counts. Its
 evidence probe is allowlisted, shell-free, bounded to a project root inside the
-host working directory (with `-m unittest` limited to reporting flags, every
+host working directory (with `-m unittest` limited to reporting flags and a
+selection of `test*.py` modules inside the working directory that default
+discovery would also run, a run that ran no test reported as not passed, every
 path a compileall argument or an omh option names kept inside the working
 directory, and `git diff` unable to leave the repository, though a `:/`
 pathspec or `<rev>:<path>` reaches all of it, which may extend above the

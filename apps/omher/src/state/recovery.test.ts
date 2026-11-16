@@ -9,7 +9,7 @@ const ready = (): ChatOpenResult => ({ session_id: "same-session", messages: [{ 
 function fixture() {
   let status: (s: BridgeStatus) => void = () => {};
   let event: (e: BridgeEvent) => void = () => {};
-  const calls: { op: string; bot?: string }[] = [];
+  const calls: { op: string; bot?: string; existing_only?: boolean }[] = [];
   const errors = new Map<string, string>();
   let pending: Promise<ChatOpenResult> | null = null;
   let metadata: Promise<never> | null = null;
@@ -18,8 +18,8 @@ function fixture() {
     connect: async () => status("open"),
     onStatus: (fn) => { status = fn; return () => {}; },
     onAny: (fn) => { event = fn; return () => {}; },
-    request: (async (op: string, p: { bot?: string }) => {
-      calls.push({ op, bot: p.bot });
+    request: (async (op: string, p: { bot?: string; existing_only?: boolean }) => {
+      calls.push({ op, bot: p.bot, ...(p.existing_only ? { existing_only: true } : {}) });
       if (op === "hello") return { bridge: "mock", version: "1", hermes: { home: "/fixture" } };
       if (op === "bots.list") return { bots: ["first", "other"].map((name) => ({ name, display_name: name, is_default: false,
         model: "existing-model", provider: "existing-provider", description: "", status: name === "first" ? "online" : "offline", running: false })) };
@@ -38,12 +38,32 @@ function fixture() {
   };
   return { bridge, calls, errors, status: (s: BridgeStatus) => status(s), event: (e: BridgeEvent) => event(e),
     pending: (p: Promise<ChatOpenResult> | null) => { pending = p; }, metadata: () => { metadata = new Promise(() => {}); },
-    loseSend: () => { loseSend = true; }, opens: (bot = "first") => calls.filter((c) => c.op === "chat.open" && c.bot === bot) };
+    loseSend: () => { loseSend = true; }, opens: (bot = "first") => calls.filter((c) => c.op === "chat.open" && c.bot === bot && !c.existing_only) };
 }
 
 afterEach(() => { vi.useRealTimers(); });
 
 describe("selected bot startup and reconnect", () => {
+  it("keeps queued messages unsent until a reconnect has actually reopened the chat", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const store = createStore(f.bridge);
+    await store.actions.init();
+    f.event({ event: "turn.start", bot: "first" });
+    await store.actions.send("Hold this until the chat is ready");
+    expect(store.getState().chats.first.queue).toHaveLength(1);
+    f.status("closed");
+    f.errors.set("first", "gateway_starting");
+    f.status("open");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.calls.filter((c) => c.op === "chat.send")).toHaveLength(0);
+    expect(store.getState().chats.first.queue).toHaveLength(1);
+    f.errors.delete("first");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(store.getState().chats.first.openError).toBeNull();
+    expect(f.calls.filter((c) => c.op === "chat.send")).toHaveLength(1);
+  });
+
   it("retries startup to ready without repicking, and never opens another offline profile", async () => {
     vi.useFakeTimers();
     const f = fixture();

@@ -11,10 +11,21 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     viewport: { width: 1280, height: 820 },
-    // Existing scenarios represent a returning person with an explicit System preference.
-    // awaken-brand.spec.ts removes it to verify the fresh-install dark default.
-    // Onboarding scenarios clear the onboarding choice themselves.
-    storageState: { cookies: [], origins: [{ origin: `http://127.0.0.1:${port}`, localStorage: [{ name: "omher.onboarded", value: "1" }, { name: "omher.theme", value: "system" }] }] },
+    // past the first-run cards, with all four mock bots in the sidebar list: specs see the app as a returning person
+    // who added them does (onboarding.spec.ts and roster.spec.ts start from nothing)
+    storageState: {
+      cookies: [],
+      origins: [
+        {
+          origin: `http://127.0.0.1:${port}`,
+          localStorage: [
+            { name: "omher.onboarded", value: "1" },
+            { name: "omher.theme", value: "system" },
+            { name: "omher.roster", value: JSON.stringify(["kami", "friren", "default", "omh-tui"]) },
+          ],
+        },
+      ],
+    },
   },
   webServer: [
     { command: `node e2e/mock-bridge.mjs --port ${mock}`, port: mock, reuseExistingServer: false },

@@ -118,7 +118,7 @@ test("shortcuts: Mod+2 opens the second bot, Mod+K searches, Mod+. toggles Detai
   await expect(page.getByTestId("bot-kami")).toHaveAttribute("aria-current", "true");
 
   await page.keyboard.press(`${key}+k`);
-  await expect(page.getByRole("searchbox", { name: "Search bots" })).toBeFocused();
+  await expect(page.getByRole("searchbox", { name: "Search bots and sessions" })).toBeFocused();
   await page.keyboard.press("Escape");
 
   const details = page.getByTestId("details");
@@ -130,6 +130,8 @@ test("shortcuts: Mod+2 opens the second bot, Mod+K searches, Mod+. toggles Detai
   await page.keyboard.press(`${key}+,`);
   await expect(page.getByTestId("settings-view")).toBeVisible();
   await expect(page.getByTestId("shortcuts")).toContainText(mac ? "⌘K" : "Ctrl+K");
+  await expect(page.getByTestId("shortcuts")).toContainText(mac ? "⌘N · ⌘T" : "Ctrl+N");
+  if (!mac) await expect(page.getByTestId("shortcuts")).not.toContainText("Ctrl+T");
   await page.keyboard.press(`${key}+,`);
   await expect(page.getByTestId("settings-view")).toHaveCount(0);
 });
@@ -139,7 +141,7 @@ test("Esc stops a running answer, but not while the search field has focus", asy
   await send(page, "check the 502s");
   await expect(page.getByTestId("stop")).toBeVisible();
   // Esc inside the search field only clears the search
-  await page.getByRole("searchbox", { name: "Search bots" }).focus();
+  await page.getByRole("searchbox", { name: "Search bots and sessions" }).focus();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("stop")).toBeVisible();
   expect((await mock("mock.calls")).calls.filter((c: any) => c.op === "chat.interrupt")).toEqual([]);
@@ -209,7 +211,15 @@ test("at 900px the header fits: the name ellipsizes, the model gives way, the pa
   const timelineBefore = await page.getByTestId("timeline").evaluate((e) => e.getBoundingClientRect().width);
   await page.getByTestId("who").click();
   await expect(page.getByTestId("details")).toHaveAttribute("aria-hidden", "false");
-  await page.waitForTimeout(400); // the panel slides in
+  // the panel slides in: measure once two reads 80 ms apart agree and it is on screen (a fixed wait raced the slide)
+  await expect
+    .poll(async () => {
+      const a = (await page.getByTestId("details").boundingBox())?.x ?? -1;
+      await page.waitForTimeout(80);
+      const b = (await page.getByTestId("details").boundingBox())?.x ?? -2;
+      return Math.abs(a - b) < 0.5 && b < 900;
+    })
+    .toBe(true);
   const m = await page.evaluate(() => {
     const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
     const head = r('[data-testid="header"]');

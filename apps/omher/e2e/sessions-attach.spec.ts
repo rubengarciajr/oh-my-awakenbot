@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+test.skip(true, "SESSIONS hidden in favour of bot threads (plan 2026-11-15)");
+
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
 const PNG = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "media", "chart.png"));
 
@@ -33,7 +35,7 @@ test.beforeEach(async () => {
 async function open(page: Page) {
   await page.addInitScript(() => {
     localStorage.removeItem("omher.sessions.recent");
-    (window as unknown as { __omherPickFolder: string }).__omherPickFolder = "/Users/you/code/omher";
+    (window as unknown as { __omherPickFolder: string }).__omherPickFolder = "/home/you/code/omher";
   });
   await page.goto("/");
   await expect(page.getByTestId("bot-kami")).toHaveAttribute("aria-current", "true");
@@ -79,10 +81,11 @@ async function drop(page: Page, target: string, files: { name: string; type: str
 }
 
 async function pick(page: Page, files: { name: string; mimeType: string; buffer: Buffer }[]) {
-  await page.getByTestId("attach").click();
+  // a session's + has no plugins: it opens the file picker straight away
   const chooser = page.waitForEvent("filechooser");
-  await page.getByTestId("attach-files").click();
+  await page.getByTestId("attach").click();
   await (await chooser).setFiles(files);
+  await expect(page.getByTestId("attach-menu")).toHaveCount(0);
 }
 
 const chipNames = (page: Page) => page.getByTestId("attach-chip").evaluateAll((els) => els.map((e) => e.getAttribute("data-name")));
@@ -181,7 +184,7 @@ test("a file dropped on a terminal is saved and its path typed at the prompt, qu
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
   await drop(page, "[data-testid=terminal]", [{ name: "my shot.png", type: "image/png", text: "x" }]);
   // the shell's own quoting: single quotes on macOS and Linux, double quotes on Windows (the page's platform)
-  const QUOTED = process.platform === "win32" ? /^"\/Users\/you\/\.omher\/session-files\/s\d+\/1-my shot\.png" $/ : /^'\/Users\/you\/\.omher\/session-files\/s\d+\/1-my shot\.png' $/;
+  const QUOTED = process.platform === "win32" ? /^"\/home\/you\/\.omher\/session-files\/s\d+\/1-my shot\.png" $/ : /^'\/home\/you\/\.omher\/session-files\/s\d+\/1-my shot\.png' $/;
   await expect.poll(async () => (await calls(page)).filter((x) => x.op === "write").map((x) => x.data).join("")).toMatch(QUOTED);
   expect((await calls(page)).find((x) => x.op === "file.save")).toMatchObject({ name: "my shot.png" });
 });

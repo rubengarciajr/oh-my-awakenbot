@@ -153,8 +153,10 @@ class ToolRowTests(unittest.TestCase):
         tool = ToolRow("t", "terminal", "seq 5", TOOL_OK, duration_s=0.1, output=("1", "2", "3", "4", "5"))
         self.assertEqual(
             lines_text(rows_of(tool)),
-            ["┃ ● terminal(seq 5)  0.1s", "┃   ⎿  1", "┃      2", "┃      3", "┃      … +2 lines · ctrl+o shows all"],
-        )
+            ["┃ ● terminal(seq 5)  0.1s", "┃   ⎿  … +2 lines · ctrl+o shows all", "┃      3", "┃      4", "┃      5"],
+        )  # a successful shell run shows its end, the count above it
+        read = ToolRow("t", "read_file", "a.py", TOOL_OK, duration_s=0.1, output=("1", "2", "3", "4", "5"))
+        self.assertEqual(lines_text(rows_of(read))[1:], ["┃   ⎿  1", "┃      2", "┃      3", "┃      … +2 lines · ctrl+o shows all"])
         failed = ToolRow("t", "terminal", "pytest", TOOL_ERROR, duration_s=2.0, output=("a", "b", "c", "1 failed"))
         self.assertEqual(lines_text(rows_of(failed))[1:], ["┃   ⎿  … +1 line · ctrl+o shows all", "┃      b",
                                                            "┃      c", "┃      1 failed"])
@@ -583,8 +585,8 @@ class ResumedHistoryTests(unittest.TestCase):
         self.assertTrue(diff and all(text.startswith("┃ ") for text in diff), texts)  # the diff, on the edit's rail
         self.assertEqual(texts[after - 2 : after + 5],
                          ["", "", "┃ ● terminal(sleep 6 + 1 command)", "", "", "┃ ● terminal(ls does-not-exist)", ""])
-        self.assertEqual(texts[after + 5], "┃ ⚚ Hermes", texts)  # the reply's header, then its words
-        self.assertTrue(texts[after + 6].startswith("┃   Done — div added to calc.py"), texts)
+        self.assertEqual(texts[after + 5], "⚚ Hermes", texts)  # the reply's header, then its words
+        self.assertTrue(texts[after + 6].startswith("  Done — div added to calc.py"), texts)
         calls = [lines[index] for index in (first, first + 3, first + 6, after, after + 3)]
         # The record says what ran, not how it ended: neither green nor red, its mark grey on the look's rail.
         self.assertEqual({row[0] for row in calls}, {rail_cell(THEME.accent)})

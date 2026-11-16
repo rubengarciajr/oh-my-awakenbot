@@ -542,6 +542,12 @@ class MixtureCategoryProjectionTest(unittest.TestCase):
         # halved ballpark of them); the tier carries its base's rate.
         "glm-5.2": (1.4, 4.4, 0.26),
         "glm-5.2-ultrafast": (1.4, 4.4, 0.26),
+        # Catalog sync, 2026-11-11: Gemini 4 Carbon carries Argon's
+        # introductory card (aistudio.google.com/docs/pricing).
+        "gemini-4-carbon": (2.0, 10.0, 0.10),
+        # Catalog sync, 2026-11-13: Gemini 4 Hydrogen's own card, cached
+        # input a twentieth of input (aistudio.google.com/docs/pricing).
+        "gemini-4-hydrogen": (1.5, 7.5, 0.075),
     }
 
     def test_catalog_sync_rows_cost_out_at_the_vendor_list_price(self):
@@ -596,6 +602,8 @@ class MixtureCategoryProjectionTest(unittest.TestCase):
             "gemini-3.6-flash": "gemini",
             "gemini-3.5-flash-lite": "google",
             "glm-5.3-flashx": "zai",
+            "gemini-4-carbon": "gemini",
+            "gemini-4-hydrogen": "google",
         }
         for model_id, family in mapped.items():
             with self.subTest(model_id=model_id):

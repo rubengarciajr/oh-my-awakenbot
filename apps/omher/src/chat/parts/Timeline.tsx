@@ -1,14 +1,28 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { RestartAction, RestartLine } from "../../sidebar/RestartLine";
 import type { Bot } from "../../lib/protocol";
-import { chatReadRecoverable, selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
+import { chatReadRecoverable, answerSlot, answerSoFar, selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
 import { slots } from "../../features";
 import { dayLabel, hhmm, sameDay } from "../../app/time";
 import { Bubble } from "./Bubble";
+import type { QueueChoice, QueueOffReasons } from "./QueueMark";
+import type { MessageItem } from "../../state/store";
+
+/** steer queue sessions: a SESSIONS chat's own ↵ menu. `off` says which items are off and why for a user row, or
+ *  null for a row with no menu; `pick` runs the choice. */
+export interface SessionQueue {
+  off(it: MessageItem): QueueOffReasons | null;
+  pick(id: string, c: QueueChoice): void;
+}
+import { quoteFor } from "./answers";
 import { LiveFace, TypingRow, awaitingFirstToken } from "./Typing";
 import { liveFaceRow } from "./liveFace";
 import { ActivityFallback, CardFallback, ElsewhereFallback, RoutineFallback } from "./fallbacks";
 import { PluginAddedCard, RoutineAddedCard } from "../../pages/ChatCards";
+import { ThreadLinkLine, ThreadRouteCard } from "../cards/ThreadNotes";
+import { WatchLine } from "../../routines/WatchLine";
 import { t } from "../../i18n";
+import { useBotReady } from "../connect/ready";
 
 /** A time label goes in when the day changes, or after a quiet gap within the same day. */
 const GAP = 30 * 60;
@@ -24,18 +38,33 @@ const botSpoke = (it?: TimelineItem) => it?.kind === "assistant" || it?.kind ===
 
 /** `face` stands in for the bot's picture beside its bubbles and the typing bubble (a SESSIONS chat: its
  *  agent's mark). Pass a stable element (useMemo): the bubbles are memoized on it. */
-export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
+export function Timeline({
+  bot,
+  face,
+  onEditLast,
+  connectionNotice = true,
+  queue,
+}: {
+  bot: Bot;
+  face?: ReactNode;
+  onEditLast?: () => void;
+  connectionNotice?: boolean;
+  queue?: SessionQueue;
+}) {
   const s = useStore();
   const items = selectTimeline(s, bot.name);
   const chat = s.chats[bot.name];
   const starting = bot.status === "starting" || chat?.openErrorCode === "gateway_starting";
   const recovering = chatReadRecoverable(chat?.openErrorCode);
-  const streaming = chat?.turn?.streaming ?? "";
+  const notReady = useBotReady(bot.name).status === "not";
+  // the answer being written, in whole lines: never word by word, never the commentary beside a tool call
+  const writing = chat?.turn ? answerSoFar(chat.turn) : "";
   const typing = awaitingFirstToken(chat);
   // the one row of the live run that carries the bot's ringed face
   const faceRow = liveFaceRow(items, chat?.turn, typing);
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const lastTop = useRef(0);
   const lastBot = useRef<string | null>(null);
   const historyAnchor = useRef<{ bot: string; id: string; top: number } | null>(null);
 
@@ -48,6 +77,12 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
     pinned.current = false;
     void s.loadHistory(bot.name);
   };
+  // the person's last message, when the chat can take it back (a SESSIONS agent's own rewind)
+  const lastUser = onEditLast ? [...items].reverse().find((i) => i.kind === "user") : undefined;
+  // taking it back rewinds the conversation only: when its turn changed files, the Edit control says they stay
+  const lastUserAt = lastUser ? items.indexOf(lastUser) : -1;
+  const keptFiles =
+    lastUserAt >= 0 && items.slice(lastUserAt + 1).some((i) => i.kind === "activity" && i.turn.steps.some((st) => st.diff?.length));
 
   // Stick to the bottom unless the person scrolled up; jump to the bottom on bot switch.
   useLayoutEffect(() => {
@@ -64,7 +99,7 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
       historyAnchor.current = null;
     } else if (pinned.current) el.scrollTop = el.scrollHeight;
     lastBot.current = bot.name;
-  }, [bot.name, items, streaming, typing, chat?.history?.loading]);
+  }, [bot.name, items, writing, typing, chat?.history?.loading]);
 
   // Files the bot sent load after the row is drawn and make it taller: stay at the bottom if pinned.
   useEffect(() => {
@@ -73,17 +108,57 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
     const ro = new ResizeObserver(() => {
       if (pinned.current) el.scrollTop = el.scrollHeight;
     });
-    for (const row of el.querySelectorAll(".row-assistant")) ro.observe(row);
+    // and each turn's activity: a fan-out card grows after its turn ended, as its subagents report back
+    for (const row of el.querySelectorAll(".row-assistant, .row-activity")) ro.observe(row);
     return () => ro.disconnect();
   }, [bot.name, items]);
 
-  const render = (it: TimelineItem, prev?: TimelineItem): ReactNode => {
+  // steer queue: the ↵ menu of a held message (Edit puts it back in this chat's box)
+  const queuePick = (id: string) => (c: QueueChoice) => {
+    if (c === "now") void s.queueSendNow(id, bot.name);
+    else if (c === "steer") void s.queueSteer(id, bot.name);
+    else if (c === "edit") s.queueEdit(id, bot.name);
+    else if (c === "send") s.queueResend(id, bot.name);
+    else s.queueDelete(id, bot.name);
+  };
+
+  // a quote's click: the message it answers, brought into view and lit for a moment
+  const showMessage = (id: string) => {
+    const el = ref.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.remove("lit");
+    void el.offsetWidth;
+    el.classList.add("lit");
+  };
+
+  const render = (it: TimelineItem, prev?: TimelineItem, at = -1): ReactNode => {
     switch (it.kind) {
-      case "user":
-        return <Bubble item={it} />;
+      case "user": {
+        const off = queue ? queue.off(it) : it.held || it.steerUnknown ? {} : null;
+        return (
+          <Bubble
+            item={it}
+            onEdit={it === lastUser && !it.error && !it.wait && !it.held ? onEditLast : undefined}
+            editKeepsFiles={it === lastUser && keptFiles}
+            onQueue={off ? (queue ? (c: QueueChoice) => queue.pick(it.id, c) : queuePick(it.id)) : undefined}
+            queueBusy={it.held && chat?.steering === it.id}
+            queueOff={off ?? undefined}
+            steeredTo={bot.display_name}
+          />
+        );
+      }
       case "assistant":
-        // the face shows on the first bot bubble after something else (the user, a day line, a card)
-        return <Bubble item={it} bot={bot.name} face={!botSpoke(prev)} faceEl={face} />;
+        // the face shows on the first bot bubble after something else (the user, a day line, a card); an automation's
+        // answer has its "Watch · <name>" line above it
+        if (it.watch)
+          return (
+            <>
+              <WatchLine name={it.watch.name} ts={it.watch.ts} text={it.text} />
+              <Bubble item={it} bot={bot.name} face faceEl={face} />
+            </>
+          );
+        return <Bubble item={it} bot={bot.name} face={!botSpoke(prev)} faceEl={face} quote={quoteFor(items, at)} onQuote={showMessage} />;
       case "activity": {
         const C = slots.activity ?? ActivityFallback;
         return <C bot={bot.name} item={it} live={chat?.turn?.id === it.turn.id} />;
@@ -105,6 +180,10 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
         return <RoutineAddedCard bot={bot.name} item={it} />;
       case "pluginAdded":
         return <PluginAddedCard bot={bot.name} item={it} />;
+      case "threadLink":
+        return <ThreadLinkLine item={it} />;
+      case "threadRoute":
+        return <ThreadRouteCard item={it} />;
       case "system":
         return (
           <div className="line sys" data-testid="system-line">
@@ -114,6 +193,31 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
     }
   };
 
+  // the answer as it is written, a whole line or paragraph at a time (answerSoFar), in the one bubble the whole answer
+  // then takes: never word by word, never the bot's commentary beside its tool calls. It sits where the answer will
+  // land (answerSlot): above a message the person sent while it was being written, which is answered next.
+  const slotId = chat?.turn ? chat.items[answerSlot(chat)]?.id : undefined;
+  const writingRow = writing ? (
+    <div className="row row-assistant" data-kind="streaming">
+      <Bubble
+        item={{ kind: "assistant", text: writing }}
+        streaming
+        bot={bot.name}
+        face={!botSpoke(slotId ? items[items.findIndex((i) => i.id === slotId) - 1] : items[items.length - 1])}
+        faceEl={face}
+        live={faceRow === "streaming"}
+        quote={quoteFor(items, slotId ? items.findIndex((i) => i.id === slotId) : items.length)}
+        onQuote={showMessage}
+      />
+    </div>
+  ) : null;
+  // the typing dots too: where the answer will land
+  const typingRow = typing ? (
+    <div className="row row-assistant row-typing" data-kind="typing">
+      <TypingRow bot={bot.name} name={bot.display_name} face={face} />
+    </div>
+  ) : null;
+
   return (
     <div
       className="thread"
@@ -121,7 +225,11 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
       data-testid="timeline"
       onScroll={(e) => {
         const el = e.currentTarget;
-        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        // only the person scrolling up lets go of the bottom: a reflow (the side panel opening narrows the column)
+        // also fires scroll, with the bottom moved away but the position not moved up
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) pinned.current = true;
+        else if (el.scrollTop < lastTop.current) pinned.current = false;
+        lastTop.current = el.scrollTop;
         if (el.scrollTop <= 80 && !pinned.current && !chat?.history?.error) older();
       }}
     >
@@ -142,9 +250,15 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
           {t("tl.unreachable", { bot: bot.display_name, error: chat.openError })}
         </div>
       )}
+      {connectionNotice && bot.status === "offline" && (
+        <div className="day note rs-note" data-testid="chat-offline">
+          <span>{t("tl.offline", { bot: bot.display_name })}</span> <RestartAction bot={bot} start testId="chat-start" />
+          <RestartLine bot={bot} testId="chat-restart-line" />
+        </div>
+      )}
       {/* A Hermes installed from the setup screen has no model yet: the first chat screen says where to pick one,
           never a terminal command. */}
-      {chat?.loaded && !chat.openError && !starting && !(chat.model || bot.model) && (
+      {chat?.loaded && !chat.openError && !starting && !(chat.model || bot.model) && !(connectionNotice && notReady) && (
         <div className="day note" data-testid="chat-no-model">
           {t("tl.noModel", { bot: bot.display_name })}
         </div>
@@ -160,31 +274,18 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
         const liveFace = liveLine && faceRow === "activity";
         return (
           <Fragment key={it.id}>
+            {it.id === slotId && writingRow}
+            {it.id === slotId && typingRow}
             {label && <div className="day">{label}</div>}
-            <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind} data-item-id={it.id}>
+            <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind} data-item-id={it.id} {...(it.kind === "user" ? { "data-item": it.id } : {})}>
               {liveFace && <LiveFace bot={bot.name} face={face} />}
-              {render(it, label ? undefined : items[i - 1])}
+              {render(it, label ? undefined : items[i - 1], i)}
             </div>
           </Fragment>
         );
       })}
-      {typing && (
-        <div className="row row-assistant row-typing" data-kind="typing">
-          <TypingRow bot={bot.name} name={bot.display_name} face={face} />
-        </div>
-      )}
-      {streaming && (
-        <div className="row row-assistant" data-kind="streaming">
-          <Bubble
-            item={{ kind: "assistant", text: streaming }}
-            streaming
-            bot={bot.name}
-            face={!botSpoke(items[items.length - 1])}
-            faceEl={face}
-            live={faceRow === "streaming"}
-          />
-        </div>
-      )}
+      {!slotId && writingRow}
+      {!slotId && typingRow}
     </div>
   );
 }

@@ -50,4 +50,26 @@ describe("recent-first saved display window", () => {
     expect(s.chats.kami.messages.map((m) => m.id)).toEqual(["25", "30", "35"]);
     expect(s.chats.kami.items.find((i) => i.id === "25")).toMatchObject({ text: "as typed", sent: "wire prompt", files });
   });
+
+  it("a saved repeat cannot consume a new message still held in the steer queue", () => {
+    let s = opened();
+    s = reduce(s, { type: "local.user", bot: "kami", id: "local-held", text: "repeat", held: true, now: 21000 });
+    s = reduce(s, { type: "chat.opened", bot: "kami", res: {
+      ...recent, messages: [{ id: "saved-repeat", role: "user", text: "repeat", ts: 21 }],
+    }, now: 22000 });
+    expect(s.chats.kami.items.find((i) => i.id === "local-held")).toMatchObject({ held: true, text: "repeat" });
+    expect(s.chats.kami.queue).toEqual(["local-held"]);
+  });
+
+  it("a saved acknowledgement retains the picked skill when the conversation reopens", () => {
+    let s = opened();
+    s = reduce(s, { type: "local.user", bot: "kami", id: "local-skill", text: "./plan our event", sent: "/plan our event", skills: ["plan"], now: 21000 });
+    s = reduce(s, { type: "chat.opened", bot: "kami", res: {
+      ...recent, messages: [{ id: "saved-skill", role: "user", text: "/plan our event", ts: 21 }],
+    }, now: 22000 });
+    expect(s.chats.kami.items.find((i) => i.id === "saved-skill")).toMatchObject({
+      text: "./plan our event", sent: "/plan our event", skills: ["plan"],
+    });
+    expect(s.chats.kami.items.some((i) => i.id === "local-skill")).toBe(false);
+  });
 });

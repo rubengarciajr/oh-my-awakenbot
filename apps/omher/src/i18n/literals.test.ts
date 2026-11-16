@@ -17,11 +17,18 @@ const ALLOWED = new Set([
   "Awaken Church",
   "OMH",
   "Hermes",
+  "oh-my-hermes",
   // commands and sample code shown as code
   "/skill",
   "/plan",
+  "$skill",
+  "$plan",
+  "dag ulw",
   "/v1/responses",
-  "hermes profile create <name>",
+  "ssh-copy-id",
+  "user@host",
+  // protocol names
+  "SSH",
   // key names
   "Ctrl+J",
   "Ctrl+.",

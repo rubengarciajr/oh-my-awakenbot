@@ -13,7 +13,9 @@ import re
 import secrets
 from typing import Final, Mapping, TypeAlias, TypeVar
 
+from .hermes_child_arm_setup import ArmSetup, parse_arm_setup
 from .hermes_child_dispatch import HermesChildObservation, is_dispatch_observation
+from .hermes_child_trace import CellTrace, parse_cell_trace
 from .hermes_child_evaluation import (
     HermesChildEvaluationBinding,
     parse_evaluation_binding,
@@ -65,7 +67,15 @@ class VerifiedHermesChildReceipt:
     observed_at: str
     receipt_ref: str
     evaluation_binding: HermesChildEvaluationBinding | None
+    # The signed wall-clock seconds from spawn to the terminal event, or None
+    # when the observation carried none (older receipts, no process started).
+    elapsed_seconds: float | None
+    # The signed paired-run arm setup, or None outside paired-run evaluation.
+    arm_setup: ArmSetup | None
     _authority: _ReceiptAuthority
+    # The signed metadata-only cell trace (`hermes_child_trace`), or None
+    # outside paired-run evaluation or when the arm home held no readable row.
+    cell_trace: CellTrace | None = None
 
     def has_receipt_authority(self) -> bool:
         """Return whether persisted receipt verification minted this value."""
@@ -158,9 +168,17 @@ def write_signed_observation(
     run_dir: Path,
     observation: Mapping[str, JsonValue],
     dispatch_observation: HermesChildObservation | None = None,
-) -> None:
-    """Sign prepared state or a process-sealed real dispatch observation."""
+) -> dict[str, JsonValue]:
+    """Sign prepared state or a process-sealed real dispatch observation.
+
+    Returns the exact payload that was signed, so a caller can show what the
+    receipt holds rather than the mapping it passed in.
+    """
     payload: dict[str, JsonValue] = dict(observation)
+    # Only the dispatcher's own from-disk reading fills arm_setup; a caller
+    # mapping can neither supply nor keep one. The same holds for cell_trace.
+    payload.pop("arm_setup", None)
+    payload.pop("cell_trace", None)
     if dispatch_observation is None:
         payload.pop("evaluation_binding", None)
     claim = payload.get("claim")
@@ -179,6 +197,19 @@ def write_signed_observation(
         )
     else:
         payload["observed_at"] = dispatch_observation.observed_at
+        # Only the dispatcher's own clock fills elapsed time, rounded to the
+        # millisecond so the signed bytes are stable; a caller mapping cannot
+        # supply or keep one of its own.
+        elapsed = dispatch_observation.elapsed_seconds
+        payload["elapsed_seconds"] = (
+            round(elapsed, 3)
+            if elapsed is not None and dispatch_observation.status in _TERMINAL_STATUSES
+            else None
+        )
+        if dispatch_observation.arm_setup is not None:
+            payload["arm_setup"] = dispatch_observation.arm_setup.to_record()
+        if dispatch_observation.cell_trace is not None and dispatch_observation.status in _TERMINAL_STATUSES:
+            payload["cell_trace"] = dispatch_observation.cell_trace.to_record()
         context = dispatch_observation.evaluation_context
         if context is None:
             payload.pop("evaluation_binding", None)
@@ -198,6 +229,7 @@ def write_signed_observation(
         {"schema_version": _SIGNATURE_SCHEMA, "hmac_sha256": signature},
         private=True,
     )
+    return payload
 
 
 def observation_signature_valid(
@@ -256,6 +288,20 @@ def load_hermes_child_receipt(
     )
     if binding_value is not None and binding is None:
         raise ReceiptVerificationError("Hermes child evaluation binding is invalid")
+    elapsed_value = observation.get("elapsed_seconds")
+    elapsed = (
+        float(elapsed_value)
+        if isinstance(elapsed_value, (int, float)) and not isinstance(elapsed_value, bool)
+        else None
+    )
+    arm_setup_value = observation.get("arm_setup")
+    arm_setup = parse_arm_setup(arm_setup_value) if arm_setup_value is not None else None
+    if arm_setup_value is not None and arm_setup is None:
+        raise ReceiptVerificationError("Hermes child arm setup is invalid")
+    cell_trace_value = observation.get("cell_trace")
+    cell_trace = parse_cell_trace(cell_trace_value) if cell_trace_value is not None else None
+    if cell_trace_value is not None and cell_trace is None:
+        raise ReceiptVerificationError("Hermes child cell trace is invalid")
     digest = hmac.new(
         key,
         canonical_observation(observation) + b"\0receipt",
@@ -268,7 +314,10 @@ def load_hermes_child_receipt(
         observed_at,
         f"hermes-child:{run_id}:{digest}",
         binding,
+        elapsed,
+        arm_setup,
         _AUTHORITY,
+        cell_trace,
     )
 
 

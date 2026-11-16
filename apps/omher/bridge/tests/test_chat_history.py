@@ -90,7 +90,7 @@ class ChatHistory(unittest.IsolatedAsyncioTestCase):
             async def rpc(method, **params):
                 reply = await original(method, **params)
                 if method == "session.resume":
-                    reply["messages"] = [{"role": "assistant", "text": f"row {i}", "row_id": i} for i in range(250)]
+                    reply["messages"] = [{"role": "user" if i % 2 == 0 else "assistant", "text": f"row {i}", "row_id": i} for i in range(250)]
                 return reply
 
             conn.client.rpc = rpc
@@ -117,8 +117,30 @@ class ChatHistory(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(c.find("session.resume"), [])
 
     def test_paged_normalization_never_drops_rows_beyond_old_open_limit(self):
-        rows = [{"role": "assistant", "text": f"reply {i}", "row_id": i} for i in range(250)]
+        rows = [{"role": "user" if i % 2 == 0 else "assistant", "text": f"reply {i}", "row_id": i} for i in range(250)]
         self.assertEqual(len(ob.chat_messages(rows, limit=None)), 250)
+
+    async def test_paged_history_keeps_watch_and_thread_display_rules(self):
+        from test_watch_notify import HISTORY, JOB
+        async with Env() as env:
+            conn = await env.bridge._conn("kami")
+            conn.main_id = MAIN_RUNTIME
+            conn.watch_names = {JOB["name"]}
+            rows = [*HISTORY, {"role": "user", "text": "next", "row_id": 20},
+                    {"role": "assistant", "text": "working commentary", "row_id": 21},
+                    {"role": "assistant", "text": 'Final answer\n```omher-thread\n{"title":"later","task":"do this"}\n```', "row_id": 22}]
+            async def read(method, **params):
+                self.assertEqual(method, "session.transcript")
+                self.assertEqual(params["session_id"], MAIN_RUNTIME)
+                return {"rows": rows}
+            conn.client.rpc = read
+            page = await env.bridge._history_page(conn, "older-page")
+            messages = page["messages"]
+            self.assertNotIn("working commentary", [m["text"] for m in messages])
+            self.assertEqual(messages[2]["watch"]["name"], JOB["name"])
+            self.assertEqual(messages[-1]["text"], "Final answer")
+            self.assertEqual(conn.folders, {})  # a history read never starts a historical thread
+            self.assertNotIn(HISTORY[2]["text"], [m["text"] for m in messages])
 
     def test_oversized_row_keeps_gateway_truncation_marker(self):
         [message] = ob.chat_messages([{"role": "assistant", "text": "visible head", "row_id": 9, "truncated": True}])

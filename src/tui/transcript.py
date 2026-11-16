@@ -25,12 +25,14 @@ one before it, so a block is flushed only after every block above it.
 Assistant text opens with a bold `● ` in the text colour on its first row, and
 every later row of that reply, however many flushes it arrives in, is indented
 to match, so a reply reads as one block beside the dim `❯ ` of the prompt above
-it. Three kinds of block hang on a rail in the left gutter (`RAIL`: a thin
+it. Two kinds of block hang on a rail in the left gutter (`RAIL`: a thin
 bar `┃` in the block's colour and a space; a bar meets the ones above and
-below it, so a block's rail is one line): your prompt's in dim grey,
+below it, so a block's rail is one line): your prompt's in dim grey, and
 each tool call's in the launch look's `Theme.accent` (a failed or denied one's
-red, as its band is; its mark says every other state), and a reply's in the
-skin's accent, the banner's colour (`Theme.brand`). Nothing has a band behind it.
+red, as its band is; its mark says every other state). A reply has no rail
+(owner, 2026-11-15): its `⚚ Hermes` header in the skin's accent, the banner's
+colour (`Theme.brand`), starts at the left edge and its text sits at the
+reply's indent, so it reads apart from the railed blocks. Nothing has a band behind it.
 
 A slash command the person runs is a block of its own: `❯ /name arg` on the prompt's dim
 rail, in the hint colour, then what it printed under `⎿`, each part in its level's colour
@@ -237,8 +239,8 @@ TOOL_MARKS = {
     TOOL_RUNNING: "○", TOOL_OK: "●", TOOL_ERROR: "✗", TOOL_DENIED: "✗", TOOL_INTERRUPTED: "▪", TOOL_RECORDED: "●",
     TOOL_GENERATING: "◌",
 }
-RAIL = "┃ "  # the left rail of a prompt, a tool call or a reply: a thin bar in the block's colour, and a space
-RAIL_LIGHT = "│"  # your prompt's bar without colour, so it differs from a reply's
+RAIL = "┃ "  # the left rail of a prompt or a tool call (a reply has none): a thin bar in the block's colour, and a space
+RAIL_LIGHT = "│"  # your prompt's bar without colour, so it differs from a tool call's
 GUTTER = Style(gutter=True)  # a rail's or a reply margin's cells, which the pager's copy leaves out
 # A running tool's mark alternates the running blue and dim this often, counted from its own start, so calls that run
 # side by side pulse each on its own. Only the live region is drawn with a clock; scrollback gets the settled mark.
@@ -398,8 +400,8 @@ class ToolRow:
     diff_root: str = ""  # the session's working directory, which the diff's file names are shown relative to
     # The parsed diff, kept while the row's group is live (it is drawn again on every change); None otherwise.
     held_lines: tuple[DiffLine, ...] | None = field(default=None, repr=False, compare=False)
-    # The first lines of what the tool printed (`TOOL_OUTPUT_KEEP` at most), and how many more it printed; for a
-    # failed tool, its error's first line.
+    # The first lines of what the tool printed (`TOOL_OUTPUT_KEEP` at most; the last ones for a successful shell run),
+    # and how many more it printed; for a failed tool, its error's first line.
     output: tuple[str, ...] = ()
     output_more: int = 0
     # What the person answered a question this call asked, as (words, notice level), drawn under its row.
@@ -844,11 +846,20 @@ CLARIFY_TOOL = "clarify"  # the Hermes tool a clarify question comes from
 UNANSWERED_OUTCOMES = {"cancelled": "cancelled", "timed_out": "timed out", "undelivered": "not delivered"}
 TOOL_OUTPUT_ROWS = 3  # shown under a tool row; the details view shows up to TOOL_OUTPUT_KEEP
 TOOL_OUTPUT_KEEP = 40
+# The tools whose result is the text a process printed: a run's summary or its errors come last, so a successful
+# call shows its end, as a failed one does (opencode's `collapse-tool-output.ts` collapses shell output to its tail).
+PROCESS_OUTPUT_TOOLS = frozenset({"terminal", "execute_code"})
 
 
-def _tool_output(result: object, status: str, closed_said: bool = False) -> tuple[tuple[str, ...], int]:
+def _shows_tail(name: str, status: str) -> bool:
+    """Whether the rows under a tool's name are the last lines it printed: a failed or denied tool's, or a
+    successful run of a process-printing tool's (`PROCESS_OUTPUT_TOOLS`); every other tool shows its first."""
+    return status in (TOOL_ERROR, TOOL_DENIED) or (status == TOOL_OK and name in PROCESS_OUTPUT_TOOLS)
+
+
+def _tool_output(result: object, status: str, closed_said: bool = False, name: str = "") -> tuple[tuple[str, ...], int]:
     """(lines, how many more) of what a tool printed: its first lines; for a failed or denied tool, one line, its
-    reason's first.
+    reason's first; for a successful `PROCESS_OUTPUT_TOOLS` call, its last lines.
 
     A failed tool whose result names no reason, only what it printed (Hermes' terminal tool reports a non-zero
     exit that way: `output` and `exit_code`, `error` None), gives the end of that instead, blank lines left out:
@@ -877,6 +888,8 @@ def _tool_output(result: object, status: str, closed_said: bool = False) -> tupl
         return tuple(printed[-TOOL_OUTPUT_KEEP:]), max(len(printed) - TOOL_OUTPUT_KEEP, 0)
     if status in (TOOL_ERROR, TOOL_DENIED):
         return tuple(lines[:1]), 0
+    if _shows_tail(name, status):
+        return tuple(lines[-TOOL_OUTPUT_KEEP:]), max(len(lines) - TOOL_OUTPUT_KEEP, 0)
     return tuple(lines[:TOOL_OUTPUT_KEEP]), max(len(lines) - TOOL_OUTPUT_KEEP, 0)
 
 
@@ -1199,26 +1212,26 @@ def _command_rows(block: CommandBlock, width: int, theme: Theme, expanded: bool)
 
 
 def _marked(rows: list[Line], opens_block: bool, theme: Theme, width: int, model: str | None = "") -> list[Line]:
-    """Assistant rows on the reply's rail in the skin's accent, every row at the reply's indent and the rail alone on
-    a blank row, so a reply's rail is one line; none wider than `width`. A block opens with who wrote it: the header
-    `⚚ Hermes · <model>` (bold in the rail's hue, the model muted, its last path segment), or with
-    ASSISTANT_HEADER False a `⚚ ` on its first row."""
+    """Assistant rows with no rail (owner, 2026-11-15: a reply reads apart from the prompts and tool calls that hang
+    on rails better without one of its own): every row at the reply's indent, a blank row left blank; none wider than
+    `width`. A block opens with who wrote it: the header `⚚ Hermes · <model>` at the left edge (bold in the skin's
+    accent, the model muted, its last path segment), the name over the text's column with the mark hanging left of
+    it; or with ASSISTANT_HEADER False a `⚚ ` on its first row."""
     rest: Line = (Span(ASSISTANT_INDENT, GUTTER),)
-    rail = _rail(theme.brand)
     name = replace(theme.brand, bold=True)
     first, head = rest, []
     if opens_block and ASSISTANT_HEADER and rows:
         said = (Span(f" · {model.rsplit('/', 1)[-1]}", theme.muted),) if model else ()
-        head = [_within((*rail, Span(f"{AGENT_MARK} {AGENT_NAME}", name), *said), width)]
+        head = [_within((Span(f"{AGENT_MARK} {AGENT_NAME}", name), *said), width)]
     elif opens_block:
         first = (Span(f"{AGENT_MARK} ", name),)
-    return head + [_within((*rail, *(first if opens_block and index == 0 else rest), *row), width) if row else rail[:1]
+    return head + [_within((*(first if opens_block and index == 0 else rest), *row), width) if row else ()
                    for index, row in enumerate(rows)]
 
 
 def _reply_width(width: int) -> int:
-    """The cells left for reply text beside its rail and margin."""
-    return max(1, width - len(RAIL) - len(ASSISTANT_INDENT))
+    """The cells left for reply text beside its margin."""
+    return max(1, width - len(ASSISTANT_INDENT))
 
 
 def _assistant_rows(block: AssistantBlock, width: int, theme: Theme) -> list[Line]:
@@ -1368,7 +1381,7 @@ def rail_cell(style: Style, faint: bool = False) -> Span:
     """A rail's cell: the thin bar `┃` in `style`'s colour (owner, 2026-10-30: the painted full cell of #2371 read too
     heavy; the README's `┃` is the look wanted). A terminal's own selection copies the bar; the pager's copy leaves
     the gutter out. Without colour a `faint` one (your prompt's, which its `❯` marks anyway) is the light `│`, so a
-    reply's bar still differs from it."""
+    tool call's bar still differs from it."""
     bar = RAIL_LIGHT if faint and style.depth == NO_COLOR else RAIL[0]
     return Span(bar, Style(fg=style.fg, depth=style.depth, gutter=True))
 
@@ -1429,7 +1442,7 @@ def _tool_row(tool: ToolRow, width: int, theme: Theme, now: float | None = None,
 def _output_rows(tool: ToolRow, width: int, theme: Theme, expanded: bool, now: float | None = None) -> list[Line]:
     """The tool's printed lines under its name, each cut to the width: three of them, or all kept with `expanded`.
 
-    A failed tool's are its last ones, with the count of the rest above them
+    A failed tool's, and a successful shell run's, are its last ones, with the count of the rest above them
     (`_tool_output`). A denied call whose result gave no reason says
     `denied`, so a denial reads apart from a failure without colour, unless
     an answer under its row already says so (`ToolRow.answer_refused`).
@@ -1439,13 +1452,13 @@ def _output_rows(tool: ToolRow, width: int, theme: Theme, expanded: bool, now: f
     output = tool.output or ((DENIED_LINE,) if tool.status == TOOL_DENIED and not tool.answer_refused() else ())
     if not output:
         return []
-    failed = tool.status in (TOOL_ERROR, TOOL_DENIED)
-    shown = output if expanded else output[-TOOL_OUTPUT_ROWS:] if failed else output[:TOOL_OUTPUT_ROWS]
+    tail = _shows_tail(tool.name, tool.status)
+    shown = output if expanded else output[-TOOL_OUTPUT_ROWS:] if tail else output[:TOOL_OUTPUT_ROWS]
     hidden = len(output) - len(shown) + tool.output_more
     first, rest = _output_leads(theme)  # a failure's lines too: its mark and its rail say it failed
     texts = [Span(line, theme.faint) for line in shown]
     more = [Span(f"… +{hidden} line{'' if hidden == 1 else 's'}{SHOWS_ALL}", theme.faint)] if hidden else []
-    ordered = [*more, *texts] if failed else [*texts, *more]
+    ordered = [*more, *texts] if tail else [*texts, *more]
     swept = _glint_band(tool, now)
     band = None
     if swept is not None:  # it enters at the left of the words and leaves past the end of the longest
@@ -1969,6 +1982,12 @@ class Transcript:
             return last
         return None
 
+    def running_clarify_id(self) -> str:
+        """The call id of the last `clarify` still running in the live tool group (the question being opened), or ""."""
+        group = self._live(ToolGroup)
+        rows = [row for row in group.tools if row.name == CLARIFY_TOOL and row.status == TOOL_RUNNING] if group else []
+        return rows[-1].tool_id if rows else ""
+
     def _open_command(self) -> CommandBlock | None:
         """`command` while its echo is open and this transcript's; None otherwise."""
         block = self.command
@@ -2236,7 +2255,7 @@ class Transcript:
         read = _recall_lines(recall) if recall is not None else (
             _read_summary(row.name, payload.get("result")) if row.status == TOOL_OK else ())
         row.output, row.output_more = (read, 0) if read else _tool_output(
-            payload.get("result"), row.status, closed_said=row.answer_refused()
+            payload.get("result"), row.status, closed_said=row.answer_refused(), name=row.name
         )
         row.inline_diff, row.diff_root = as_text(payload.get("inline_diff")).encode("utf-8", "surrogatepass"), self.cwd
         row.held_lines = None

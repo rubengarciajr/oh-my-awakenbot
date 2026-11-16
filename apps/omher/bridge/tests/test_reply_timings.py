@@ -158,7 +158,8 @@ class BridgeTimingTests(unittest.IsolatedAsyncioTestCase):
         bridge._probe_clarify_batch = AsyncMock()
         bridge.emit = AsyncMock()
 
-        async def submit(_conn, _sid, _text, _input):
+        async def submit(_conn, _sid, _text, _input, queued=False):
+            self.assertFalse(queued)
             clock.value = .3
             await bridge._on_frame(conn, {'method': 'event', 'params': {
                 'session_id': 'runtime', 'admission_id': 'a1', 'type': 'message.delta',

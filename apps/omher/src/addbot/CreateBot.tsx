@@ -10,17 +10,18 @@ const idForName = (name: string) => name.toLowerCase().normalize("NFKD").replace
 
 export function CreateBot({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
   const s = useStore();
+  const sources = s.bots.filter((b) => !b.host);
   const [name, setName] = useState("");
   const [id, setId] = useState("");
   const [editedId, setEditedId] = useState(false);
-  const [source, setSource] = useState(s.selectedBot || s.bots[0]?.name || "");
+  const [source, setSource] = useState(sources.find((b) => b.name === s.selectedBot)?.name || sources[0]?.name || "");
   const [description, setDescription] = useState("");
   const [soul, setSoul] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const duplicate = s.bots.some((b) => b.name === id);
-  const selected = s.bots.find((b) => b.name === source);
+  const selected = sources.find((b) => b.name === source);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (busy || warning) return;
@@ -53,7 +54,7 @@ export function CreateBot({ onBack, onClose }: { onBack: () => void; onClose: ()
           autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(e) => { setId(e.target.value); setEditedId(true); setError(""); }} /></label>
         <p className="ab-hint" id="createbot-id-hint">{duplicate ? t("ab.duplicate") : t("ab.idHint")}</p>
         <label>{t("ab.source")}<select value={source} aria-label={t("ab.source")} required onChange={(e) => setSource(e.target.value)}>
-          {s.bots.map((b) => <option key={b.name} value={b.name}>{b.display_name}</option>)}
+          {sources.map((b) => <option key={b.name} value={b.name}>{b.display_name}</option>)}
         </select></label>
         {selected && <>
           <p className="ab-hint">{t("ab.modelInherited", { model: selected.model || selected.provider })}</p>

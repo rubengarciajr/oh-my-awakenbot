@@ -46,6 +46,18 @@ class ModelSelection(unittest.IsolatedAsyncioTestCase):
             await env.bridge.op_set_model({"bot": "kami", "reasoning": "low"})
             self.assertEqual(revisions, [7, 8])
 
+    async def test_confirmation_for_another_target_never_reuses_the_old_fence(self):
+        async with Env(model_replies=[{"status": "confirmation_required", "confirm": "token"}], resume_bumps=True) as env:
+            result = await env.bridge.op_set_model({"bot": "kami", "model": "first-model"})
+            self.assertEqual(result["confirmation"]["token"], "token")
+            conn = env.bridge.conns["kami"]
+            first = conn.client.find("session.mutate")[0]
+            await env.bridge.op_set_model({"bot": "kami", "model": "other-model", "confirm": "token"})
+            second = conn.client.find("session.mutate")[1]
+            self.assertGreater(second["expected_revision"], first["expected_revision"])
+            self.assertEqual(second["payload"], {"model": "other-model", "confirm": "token"})
+            self.assertIsNone(conn.model_confirmation)
+
     async def test_lost_reply_is_never_retried(self):
         async with Env() as env:
             conn = await env.bridge._conn("kami")

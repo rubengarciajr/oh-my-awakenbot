@@ -1,8 +1,18 @@
 mod accounts;
+mod acp_agents;
+mod acp_chat;
 mod agent_chat;
 mod appimage;
 mod bridge;
+mod custom_agents;
+mod dsh_chat;
+mod folder_open;
+mod git_branch;
 mod hermes_auth;
+mod past_chats;
+mod peers;
+#[cfg(all(test, unix))]
+mod pty_bench;
 mod session_files;
 mod sessions;
 mod setup;
@@ -22,6 +32,7 @@ use tauri::{Manager, RunEvent, State};
 
 struct Shell {
     bridge: Arc<Bridge>,
+    peers: Arc<peers::Peers>,
     resource_dir: Option<PathBuf>,
     installing: Arc<AtomicBool>,
     logins: Arc<accounts::Logins>,
@@ -205,6 +216,14 @@ async fn account_status(cli: String, id: String) -> Result<Option<accounts::Logi
     tauri::async_runtime::spawn_blocking(move || accounts::status(&home, &cli, &id)).await.map_err(|e| e.to_string())?
 }
 
+/// The CLI's version through its fixed `--version` (Claude Code, Codex); only the version token comes back,
+/// `null` for other CLIs or output with no version in it.
+#[tauri::command]
+async fn account_version(cli: String) -> Result<Option<String>, String> {
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || accounts::version(&home, &cli)).await.map_err(|e| e.to_string())?
+}
+
 /// Start the CLI's own sign-in (`claude auth login`, `codex login`) with omher account `id` as its home. The
 /// browser part happens in the CLI; its plain output lines and then its exit arrive on `on_event`.
 #[tauri::command]
@@ -228,9 +247,73 @@ async fn account_login_cancel(shell: State<'_, Shell>, login: u32) -> Result<(),
 
 /// The allow-listed agent programs (claude, codex, omo, dsh, omh, pi, omp, grok), how each opens and where each
 /// was found, if anywhere.
+/// One row of the agent look-up: an allow-listed agent, or one the person added on Settings › Agents.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum AnyAgent {
+    Listed(AgentInfo),
+    Custom(custom_agents::CustomInfo),
+}
+
 #[tauri::command]
-async fn sessions_agents() -> Result<Vec<AgentInfo>, String> {
-    Ok(tauri::async_runtime::spawn_blocking(sessions::agents_on_this_machine).await.map_err(|e| e.to_string())?)
+async fn sessions_agents() -> Result<Vec<AnyAgent>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut all: Vec<AnyAgent> = sessions::agents_on_this_machine().into_iter().map(AnyAgent::Listed).collect();
+        // then the person's own agents, each checked as the file is read now (a broken entry is not listed here)
+        all.extend(custom_agents::list_here().agents.into_iter().map(AnyAgent::Custom));
+        all
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Settings › Agents: the person's own agents (where each program is now) and the entries of the file that are
+/// broken (skipped, never run). Reads omher's own file only.
+#[tauri::command]
+async fn custom_agents_list() -> Result<custom_agents::CustomList, String> {
+    tauri::async_runtime::spawn_blocking(custom_agents::list_here).await.map_err(|e| e.to_string())
+}
+
+/// The confirm card for the Add agent form: the entry the four fields make, checked, and the exact command omher
+/// would run (the program as found now, then the arguments; none when it is not found). Writes nothing. A refusal is
+/// `why:<code>`.
+#[tauri::command]
+async fn custom_agent_preview(label: String, program: String, args: String, install: String) -> Result<custom_agents::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || custom_agents::preview_here(&label, &program, &args, &install).map_err(|w| format!("why:{}", w.code())))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The card's Add, the only way an entry is written: `entry` is checked again and added to omher's own file.
+#[tauri::command]
+async fn custom_agent_confirm(entry: custom_agents::CustomAgent) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = custom_agents::home().ok_or("no home folder")?;
+        custom_agents::confirm_add(&home, &entry, Os::current(), sessions::is_program_file).map_err(|w| format!("why:{}", w.code()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The confirm card for a bot's draft (an `omher-agent` block in its reply, read by the UI): the same check as the
+/// form's preview and stricter (no shell, interpreter or built-in program), the arguments as the draft's own list.
+/// Writes nothing; only the card's Add (`custom_agent_confirm`) does. A refusal is `why:<code>`.
+#[tauri::command]
+async fn custom_agent_bot_preview(label: String, program: String, args: Vec<String>, install: String) -> Result<custom_agents::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || custom_agents::bot_preview_here(&label, &program, &args, &install).map_err(|w| format!("why:{}", w.code())))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The remove confirm: agent `id` leaves omher's own file (a broken entry too).
+#[tauri::command]
+async fn custom_agent_remove(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = custom_agents::home().ok_or("no home folder")?;
+        custom_agents::confirm_remove(&home, &id).map_err(|w| format!("why:{}", w.code()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Start allow-listed agent `agent` in folder `cwd` in a new pseudo-terminal (its own terminal UI). Only an
@@ -269,10 +352,55 @@ async fn session_start(
     .map_err(|e| e.to_string())?
 }
 
+/// The bottom terminal panel's shell: the person's own login shell (`sessions::shell_argv`, decided by the shell,
+/// never by the page) in `cwd` when that is an existing folder, else home. The page sends a folder and a size only;
+/// the session is then written, acknowledged, resized and closed with the `session_*` commands like any other.
+#[tauri::command]
+async fn shell_start(
+    shell: State<'_, Shell>,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+    on_data: Channel<InvokeResponseBody>,
+    on_exit: Channel<Option<u32>>,
+) -> Result<ShellStarted, String> {
+    let sessions = shell.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = user_home()?;
+        let (id, at) = sessions.start_shell(cwd.as_deref(), &home, cols, rows, move |ev| match ev {
+            Output::Data(b) => {
+                let _ = on_data.send(InvokeResponseBody::Raw(b));
+            }
+            Output::Exit(code) => {
+                let _ = on_exit.send(code);
+            }
+        })?;
+        Ok(ShellStarted { id, cwd: at.to_string_lossy().into_owned() })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A started terminal-panel shell: its session id and the folder it started in.
+#[derive(serde::Serialize)]
+struct ShellStarted {
+    id: u32,
+    cwd: String,
+}
+
 /// Keystrokes (and pastes) from the terminal view into session `id`.
 #[tauri::command]
 async fn session_write(shell: State<'_, Shell>, id: u32, data: String) -> Result<(), String> {
     shell.sessions.write(id, data.as_bytes())
+}
+
+/// The terminal view has drawn `bytes` more of session `id`'s output. The session's reader stops reading its
+/// program while the page is behind and reads again as this credit comes back (`FLOW_HIGH` / `FLOW_LOW` in
+/// sessions.rs). Two numbers only; nothing is read or written.
+#[tauri::command]
+async fn session_ack(shell: State<'_, Shell>, id: u32, bytes: u64) -> Result<(), String> {
+    shell.sessions.ack(id, bytes);
+    Ok(())
 }
 
 #[tauri::command]
@@ -297,15 +425,22 @@ async fn session_close_all(shell: State<'_, Shell>) -> Result<(), String> {
 
 /// Start allow-listed agent `agent` in folder `cwd` as a chat: its structured mode (the fixed arguments in
 /// the allow-list), with events for the chat view on `on_event` and, once, `{event:"exit", code, error}`.
-/// Only an agent id, a folder, optionally a Claude Code session id or Codex thread id, and optionally the account a
-/// restarted session ran with cross from the UI.
+/// Only an agent id, a folder, optionally a Claude Code session id or Codex thread id, optionally the account a
+/// restarted session ran with, and the SESSIONS id (`s<digits>`, whose attachment folder a Claude Code chat may
+/// read) cross from the UI.
 #[tauri::command]
-async fn chat_start(shell: State<'_, Shell>, agent: String, cwd: String, resume: Option<String>, account: Option<String>, on_event: Channel<serde_json::Value>) -> Result<u32, String> {
+async fn chat_start(shell: State<'_, Shell>, agent: String, cwd: String, resume: Option<String>, account: Option<String>, session: Option<String>, on_event: Channel<serde_json::Value>) -> Result<u32, String> {
     let chats = shell.chats.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // The same account as a terminal session of this agent: its home variable, or nothing ("This computer").
         let account_env = user_home().map(|h| accounts::session_env_for(&h, &agent, account.as_deref())).unwrap_or_default();
-        chats.start_agent(&agent, std::path::Path::new(&cwd), resume.as_deref(), &account_env, move |out| {
+        // Claude Code: the session's attachment folder (`s<digits>` under ~/.omher/session-files), made now so its
+        // copies are readable without a card; no folder (a bad id, a link) only means a card per read
+        let files = match (agent.as_str(), session.as_deref()) {
+            ("claude", Some(s)) => user_home().and_then(|h| session_files::session_dir(&h, s)).ok(),
+            _ => None,
+        };
+        chats.start_agent(&agent, std::path::Path::new(&cwd), resume.as_deref(), &account_env, files.as_deref(), move |out| {
             let _ = on_event.send(match out {
                 ChatOut::Event(e) => e,
                 ChatOut::Exit(code, error) => serde_json::json!({"event": "exit", "code": code, "error": error}),
@@ -316,8 +451,9 @@ async fn chat_start(shell: State<'_, Shell>, agent: String, cwd: String, resume:
     .map_err(|e| e.to_string())?
 }
 
-/// What the person did in chat `id`: `{kind:"send", text}`, `{kind:"interrupt"}`,
-/// `{kind:"approve", request_id, choice}`, `{kind:"clarify", request_id, answer}`, `{kind:"model", model}`.
+/// What the person did in chat `id`: `{kind:"send", text, images, id}`, `{kind:"interrupt"}`,
+/// `{kind:"approve", request_id, choice}`, `{kind:"clarify", request_id, answer}`, `{kind:"model", model}`,
+/// `{kind:"mode", mode}` (one of `agent_chat::modes_for`), `{kind:"effort", effort}`.
 #[tauri::command]
 async fn chat_input(shell: State<'_, Shell>, id: u32, input: agent_chat::Input) -> Result<(), String> {
     let chats = shell.chats.clone();
@@ -354,6 +490,12 @@ async fn session_file_read(path: String) -> Result<tauri::ipc::Response, String>
     let real = session_files::check(&home, &path)?;
     let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(real)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// The git branch of a session's folder, from its `.git/HEAD` only (no program runs); "" outside a repository.
+#[tauri::command]
+async fn session_branch(cwd: String) -> Result<String, String> {
+    Ok(git_branch::branch(std::path::Path::new(&cwd)))
 }
 
 /// Remove session `session`'s saved files (it was closed).
@@ -416,7 +558,132 @@ pub(crate) fn media_target<S: Fn(&str) -> bool>(path: &str, served: S) -> Result
 /// takes only the provider id, checked by `hermes_auth::valid_provider`, and never sees the key.
 #[tauri::command]
 async fn open_hermes_auth(provider: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || hermes_auth::open(&provider)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || hermes_auth::open(hermes_auth::Form::ApiKey, &provider)).await.map_err(|e| e.to_string())?
+}
+
+/// The chat's connect block: open the person's own system terminal running exactly `hermes auth add <id>` (rule
+/// 23), Hermes' own sign-in for that provider. Only `openai-codex` and `nous` pass
+/// (`hermes_auth::SIGN_IN`); omher never sees what the person types there.
+#[tauri::command]
+async fn open_hermes_sign_in(provider: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || hermes_auth::open(hermes_auth::Form::SignIn, &provider)).await.map_err(|e| e.to_string())?
+}
+
+/// A SESSIONS row's "Reveal": show the session's folder in the file manager (rule 30). Only an absolute path to a
+/// folder that exists crosses from the page.
+#[tauri::command]
+async fn session_reveal(cwd: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || folder_open::reveal(&cwd)).await.map_err(|e| e.to_string())?
+}
+
+/// A SESSIONS row's "Open in Terminal": the person's own system terminal, in the session's folder, running their
+/// shell with nothing typed into it (rule 30).
+#[tauri::command]
+async fn session_open_terminal(cwd: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || folder_open::open_terminal(&cwd)).await.map_err(|e| e.to_string())?
+}
+
+/// The home a new session of `agent` reads its conversations from: the account picked for new sessions, else the
+/// CLI's own (rule 30).
+fn past_home(agent: &str) -> Result<PathBuf, String> {
+    if !past_chats::lists(agent) {
+        return Err(format!("{agent} conversations are not listed"));
+    }
+    let home = user_home()?;
+    let env = accounts::session_env(&home, agent);
+    past_chats::cli_home(&home, agent, &env, &|k| std::env::var(k).ok()).ok_or_else(|| "no home".to_string())
+}
+
+/// The recent conversations Claude Code or Codex keeps for `cwds` (the + menu's folders), read-only (rule 30).
+#[tauri::command]
+async fn past_chats_list(agent: String, cwds: Vec<String>) -> Result<Vec<past_chats::PastChat>, String> {
+    tauri::async_runtime::spawn_blocking(move || past_chats::list(&past_home(&agent)?, &agent, &cwds)).await.map_err(|e| e.to_string())?
+}
+
+/// The last messages of one of those conversations, shown before the agent continues it (rule 30).
+#[tauri::command]
+async fn past_chat_messages(agent: String, id: String, cwd: String) -> Result<Vec<past_chats::PastMsg>, String> {
+    tauri::async_runtime::spawn_blocking(move || past_chats::messages(&past_home(&agent)?, &agent, &id, &cwd)).await.map_err(|e| e.to_string())?
+}
+
+/// How many asks wait on the person, on the Dock icon (macOS) or the launcher entry (Linux desktops that show
+/// counts); Windows has no count, so its taskbar button gets a small amber dot. 0 clears it.
+#[tauri::command]
+async fn asks_badge(window: tauri::WebviewWindow, count: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let icon = if count > 0 {
+            let (rgba, n) = folder_open::overlay_dot();
+            Some(tauri::image::Image::new_owned(rgba, n, n))
+        } else {
+            None
+        };
+        window.set_overlay_icon(icon).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        window.set_badge_count(if count > 0 { Some(i64::from(count)) } else { None }).map_err(|e| e.to_string())
+    }
+}
+
+/// The remote machines (`~/.omher/peers.json`, checked on read) and each link's state.
+#[tauri::command]
+async fn peers_list(shell: State<'_, Shell>) -> Result<Vec<peers::PeerStatus>, String> {
+    Ok(shell.peers.statuses())
+}
+
+/// Every link state change, as it happens (the UI attaches a connected peer to its bridge, detaches the rest).
+#[tauri::command]
+async fn peers_watch(shell: State<'_, Shell>, on_event: Channel<peers::PeerStatus>) -> Result<(), String> {
+    shell.peers.watch(Arc::new(move |st| {
+        let _ = on_event.send(st);
+    }));
+    Ok(())
+}
+
+/// The host field's suggestions: `Host` aliases from `~/.ssh/config` (read only; patterns skipped).
+#[tauri::command]
+async fn peers_hosts() -> Result<Vec<String>, String> {
+    let home = user_home()?;
+    let text = std::fs::read_to_string(home.join(".ssh").join("config")).unwrap_or_default();
+    Ok(peers::ssh_config_hosts(&text))
+}
+
+/// Check a host for the confirm card: the fixed `ssh` link comes up, and the card reads the remote's bots through
+/// the returned loopback URL. Nothing is written on this computer; `peers_check_close` (or Connect) ends it.
+#[tauri::command]
+async fn peers_check(shell: State<'_, Shell>, host: String, port: Option<u16>) -> Result<serde_json::Value, peers::Failure> {
+    let p = shell.peers.clone();
+    tauri::async_runtime::spawn_blocking(move || p.check(&host, port))
+        .await
+        .map_err(|e| peers::Failure { kind: peers::FailKind::Bridge, line: e.to_string() })?
+        .map(|(check, url, found)| serde_json::json!({"check": check, "url": url, "found": found}))
+}
+
+#[tauri::command]
+async fn peers_check_close(shell: State<'_, Shell>, check: String) -> Result<(), String> {
+    let p = shell.peers.clone();
+    tauri::async_runtime::spawn_blocking(move || p.check_close(&check)).await.map_err(|e| e.to_string())
+}
+
+/// The confirm card's Connect: the one call that adds a row to `~/.omher/peers.json`.
+#[tauri::command]
+async fn peers_add(shell: State<'_, Shell>, label: String, host: String, port: Option<u16>, check: Option<String>) -> Result<peers::PeerStatus, String> {
+    let p = shell.peers.clone();
+    tauri::async_runtime::spawn_blocking(move || p.add(&label, &host, port, check.as_deref())).await.map_err(|e| e.to_string())?
+}
+
+/// Settings › Remote machines' Remove: the row leaves peers.json and the link stops.
+#[tauri::command]
+async fn peers_remove(shell: State<'_, Shell>, id: String) -> Result<(), String> {
+    let p = shell.peers.clone();
+    tauri::async_runtime::spawn_blocking(move || p.remove(&id)).await.map_err(|e| e.to_string())?
+}
+
+/// Try a failed link again now.
+#[tauri::command]
+async fn peers_retry(shell: State<'_, Shell>, id: String) -> Result<(), String> {
+    shell.peers.retry(&id)
 }
 
 /// Start the bridge again (the Retry button on the failed screen).
@@ -445,11 +712,19 @@ pub fn run() {
             account_env,
             account_clis,
             account_status,
+            account_version,
             account_login_start,
             account_login_cancel,
             sessions_agents,
+            custom_agents_list,
+            custom_agent_preview,
+            custom_agent_bot_preview,
+            custom_agent_confirm,
+            custom_agent_remove,
             session_start,
+            shell_start,
             session_write,
+            session_ack,
             session_resize,
             session_close,
             session_close_all,
@@ -460,9 +735,24 @@ pub fn run() {
             session_file_read,
             session_files_remove,
             session_files_prune,
+            session_branch,
             chat_close_all,
             open_media,
-            open_hermes_auth
+            open_hermes_auth,
+            open_hermes_sign_in,
+            session_reveal,
+            session_open_terminal,
+            past_chats_list,
+            past_chat_messages,
+            asks_badge,
+            peers_list,
+            peers_watch,
+            peers_hosts,
+            peers_check,
+            peers_check_close,
+            peers_add,
+            peers_remove,
+            peers_retry
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -470,8 +760,15 @@ pub fn run() {
             let bridge = Bridge::new();
             let resource_dir = app.path().resource_dir().ok();
             bridge.start(resource_dir.clone());
+            let manifest = if cfg!(debug_assertions) { Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))) } else { None };
+            let peers = peers::Peers::new(user_home().unwrap_or_default());
+            if let Ok(script) = bridge::resolve_script(resource_dir.as_deref(), manifest, |p| p.is_file()) {
+                peers.set_script(script);
+            }
+            peers.start_all();
             app.manage(Shell {
                 bridge,
+                peers,
                 resource_dir,
                 installing: Arc::new(AtomicBool::new(false)),
                 logins: accounts::Logins::new(),
@@ -491,6 +788,7 @@ pub fn run() {
                 shell.sessions.close_all();
                 shell.chats.close_all();
                 shell.logins.cancel_all();
+                shell.peers.stop_all();
                 shell.bridge.stop();
             }
         }
