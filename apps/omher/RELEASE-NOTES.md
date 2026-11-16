@@ -1,7 +1,8 @@
-AWAKEN BOT 0.2.11 — upstream desktop update
+AWAKEN BOT 0.2.12 — upstream desktop update
 
 - Integrates the upstream omher 0.2.11 desktop release.
 - Adds bot chat threads, SSH connections to another computer, configurable ACP agents, and terminal improvements.
+- Fits the church wordmark and both header controls inside the sidebar while preserving the original logo ratio.
 - Keeps Awaken Church branding, the circular liquid orb, black app icon, dark theme, loading overlay, and daily intro.
 - Preserves recent-first history, connection recovery, response timing diagnostics, and paused hidden animations.
 - Keeps the existing application identifier and saved Hermes chats, providers, and app preferences.

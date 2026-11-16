@@ -24,6 +24,7 @@
   display: flex;
   align-items: center;
   gap: 2px;
+  flex: none;
 }
 /* the "!" (oh-my-hermes is not installed): the + button's size and quiet colour, no fill at rest; open, the gray
    pressed look the SESSIONS + has while its menu is open */
@@ -132,7 +133,8 @@
   align-items: center;
   gap: 9px;
   padding: 0 var(--side-x);
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .orb-mark { display: inline-flex; flex: none; width: 20px; height: 20px; }
 .orb-mark img {
@@ -151,12 +153,17 @@
   display: block;
   width: auto;
   height: 18px;
+  max-height: 18px;
   aspect-ratio: 1039 / 119;
   object-fit: contain;
-  flex: 0 0 auto;
+  /* Keep the normal size, shrinking proportionally only when the notice needs its own button. */
+  flex: 0 1 auto;
+  min-width: 0;
   filter: brightness(0) invert(1);
   opacity: 0.94;
 }
+/* The second control may need horizontal room; auto height preserves the artwork's ratio as it shrinks. */
+.side-top:has(.omh-note) .church-wordmark { height: auto; }
 [data-theme="light"] .brand .church-wordmark { filter: brightness(0); }
 .search {
   height: 30px;

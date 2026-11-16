@@ -1,6 +1,6 @@
 # Awaken Bot brand guide
 
-Last reviewed: November 12, 2026.
+Last reviewed: November 16, 2026.
 
 This guide records the identity implemented in this project and the design choices agreed for Awaken Bot. It covers the desktop app, its launch experience, and its brand assets. It is a product guide for this fork, rather than a complete Awaken Church identity manual.
 
@@ -58,8 +58,10 @@ The current sidebar lockup uses:
 | --- | --- |
 | Animated orb | `20 × 20 px` |
 | Gap between orb and church artwork | `9 px` |
-| Church artwork | `18 px` high, automatic width; about `157.2 px` wide |
+| Church artwork | Up to `18 px` high, automatic width; about `157.2 px` wide at full size |
 | Alignment | Vertically centered |
+
+When the optional helper notice occupies the header, the wordmark scales down uniformly to keep both controls inside the sidebar. The orb stays `20 × 20 px`.
 
 The orb and the church symbol are separate elements of this lockup. Keep both when reproducing the existing sidebar identity.
 

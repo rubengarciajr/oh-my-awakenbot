@@ -609,3 +609,45 @@ for (const [lang, line, row, tip] of [
     await expect(page.getByTestId("omh-notice")).toHaveAttribute("aria-label", tip);
   });
 }
+
+for (const lang of ["en", "ko", "ja", "zh"] as const) {
+  for (const omh of [false, true]) {
+    test(`C. church wordmark and header controls fit the 248px sidebar (${lang}, ${omh ? "without notice" : "with notice"})`, async ({ page }, info) => {
+      await open(page, { omh, lang });
+      await expect(page.getByTestId("omh-notice")).toHaveCount(omh ? 0 : 1);
+      for (const width of [900, 1280]) {
+        await page.setViewportSize({ width, height: 820 });
+        const geometry = await page.evaluate(() => {
+          const rect = (selector: string) => {
+            const el = document.querySelector(selector);
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { left: r.left, right: r.right, width: r.width, height: r.height };
+          };
+          return {
+            sidebar: rect('[data-testid="sidebar"]')!,
+            brand: rect(".side-top .brand")!,
+            orb: rect(".brand .orb-mark")!,
+            wordmark: rect(".brand .church-wordmark")!,
+            notice: rect('[data-testid="omh-notice"]'),
+            add: rect(".side-add > .ui-ib:last-child")!,
+          };
+        });
+        if (lang === "en" && width === 1280) {
+          console.log("Sidebar header geometry:", JSON.stringify(geometry));
+          await page.screenshot({ path: info.outputPath("church-header.png") });
+        }
+        expect(geometry.sidebar.width).toBe(248);
+        expect(geometry.orb.width).toBe(20);
+        expect(geometry.orb.height).toBe(20);
+        expect(geometry.wordmark.width / geometry.wordmark.height).toBeCloseTo(1039 / 119, 2);
+        expect(geometry.wordmark.height).toBeGreaterThan(0);
+        expect(geometry.wordmark.height).toBeLessThanOrEqual(18);
+        if (omh) expect(geometry.wordmark.height).toBe(18);
+        expect(geometry.brand.right).toBeLessThanOrEqual((geometry.notice ?? geometry.add).left);
+        if (geometry.notice) expect(geometry.notice.right).toBeLessThanOrEqual(geometry.add.left);
+        expect(geometry.add.right, `${lang}, ${width}px`).toBeLessThanOrEqual(geometry.sidebar.right);
+      }
+    });
+  }
+}
