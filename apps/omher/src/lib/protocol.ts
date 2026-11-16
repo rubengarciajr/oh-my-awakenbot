@@ -16,7 +16,42 @@ export interface Bot {
   running: boolean;
   /** Changes whenever the bot's own picture changes; null = no picture, the built-in face is used. */
   avatar_rev?: number | null;
+  /** A bot on another computer, reached over SSH (its name is `<peer>:<profile>`); absent for this computer's bots. */
+  host?: BotHost;
 }
+
+/** Where a bot on another computer lives: the peer omher's shell links over `ssh`. */
+export interface BotHost {
+  kind: "ssh";
+  peer: string;
+  label: string;
+  host: string;
+}
+
+/** What a forwarded peer has, for the confirm card (`peers.probe`: its hello and bots.list only). */
+export interface PeerProbe {
+  version: string;
+  hermes: { home: string; version: string };
+  bots: { name: string; display_name: string; model: string; provider: string; status: BotStatus }[];
+}
+
+/** When a plugin change takes effect for the bot, from Hermes' own answer. live: its next conversation. reload: the
+ *  bot's gateway did not reload; one press asks it again (`plugins.reload`). restart: only a restart of
+ *  `restart_bot` (the host gateway, unless the bot runs its own) loads it. */
+export interface PluginLoad {
+  load?: "live" | "reload" | "restart";
+  restart_bot?: string;
+}
+
+/** One live unit Hermes named when it refused: what it is, its name when Hermes gave one, how long it has run, and
+ *  whose it is (a chat by its session key, a scheduled job by the bot that holds it; null when Hermes did not say). */
+export type WorkUnit = { kind: "chat" | "cron" | "task" | "run" | "work"; name: string | null; secs: number | null; bot: string | null };
+export type RestartResult =
+  | { outcome: "ok"; bots?: string[] }
+  | { outcome: "refused"; work: WorkUnit[] }
+  | { outcome: "failed"; line: string };
+/** The gateway process that serves a bot (named by the profile that owns it) and every bot on it, it included. */
+export type RestartScope = { gateway: string; bots: { name: string; display_name: string }[] };
 
 /** What a bot has done, for its page: sessions per place (slack, discord, cron…), skills, routines. */
 export interface BotInfo {
@@ -46,8 +81,18 @@ export interface Msg {
   role: "user" | "assistant";
   text: string;
   ts: number;
+  /** The gateway bounded one oversized display row; the full saved message remains in Hermes. */
+  truncated?: boolean;
   /** user rows sent with "Reply there": the thread the person pointed the bot at. */
   reply_to?: ReplyRef | null;
+  /** assistant rows: the answer to an automation's delivered result (its inbound row is not sent). */
+  watch?: WatchTag;
+}
+
+/** The automation whose delivered result a Bot Chat answer replies to: its name and when it came in (unix s). */
+export interface WatchTag {
+  name: string;
+  ts: number;
 }
 
 /** A thread the bot was pointed at (`target` is Hermes' `platform:chat_id[:thread_id]`). */
@@ -145,6 +190,8 @@ export interface PluginRow {
   catalog_name: string | null;
   tools: number;
   hooks: number;
+  /** Tools the plugin registered in the running gateway (an older bridge leaves it out). */
+  live_tools?: number;
   update_available: boolean;
   /** Secret settings the plugin needs that are not set yet (env names); it stays off until they are. */
   needs_env: string[];
@@ -190,6 +237,21 @@ export interface ModelCurrent {
   reasoning: string;
 }
 
+export interface ModelChangeResult extends ModelCurrent {
+  status?: "deferred";
+  confirmation?: { token: string; message: string };
+}
+
+/** `bots.ready`: Hermes' own readiness probe for a bot (`setup.runtime_check`). `unknown`: the gateway could not say
+ *  (an older Hermes, or still checking), which the chat treats as ready. */
+export interface BotReady {
+  ok: boolean;
+  provider: string;
+  model: string;
+  error: string;
+  unknown?: boolean;
+}
+
 export interface ModelOptions {
   providers: ModelProvider[];
   current: ModelCurrent;
@@ -211,6 +273,41 @@ export interface ChatOpenResult {
   model: string;
   provider: string;
   reasoning: string;
+  /** Native gateway pages, or in-memory pages of the old gateway's full resume reply. */
+  history?: { mode: "paged" | "legacy"; cursor: string | null };
+}
+
+export interface ChatHistoryResult {
+  session_id: string;
+  messages: Msg[];
+  next_cursor: string | null;
+  /** Hermes invalidated the cursor: replace the saved display window; live cards keep their state. */
+  reset: boolean;
+}
+
+/** Local durations only. Null means that stage was not observed. */
+export interface ReplyTiming {
+  trace_id: string;
+  status: string;
+  bridge_prepare_ms: number | null;
+  submit_ack_ms: number | null;
+  turn_start_ms: number | null;
+  first_progress_ms: number | null;
+  first_text_ms: number | null;
+  total_ms: number | null;
+  tools_ms: number | null;
+  provider_ms: number | null;
+  provider_first_chunk_ms: number | null;
+  provider_calls: number | null;
+  client_first_text_ms?: number | null;
+  client_submit_ack_ms?: number | null;
+}
+
+export interface PerformanceSnapshot {
+  version: 1;
+  storage: "memory";
+  limit: number;
+  recent: ReplyTiming[];
 }
 
 /** A Hermes chat the bridge created in a picked folder (SESSIONS > oh-my-hermes). */
@@ -228,11 +325,17 @@ export interface FolderOpenResult {
 export interface OpMap {
   hello: { params: Record<string, never>; result: HelloResult };
   "bots.list": { params: Record<string, never>; result: { bots: Bot[] } };
-  "chat.open": { params: { bot: string }; result: ChatOpenResult };
+  "chat.open": { params: { bot: string; existing_only?: boolean }; result: ChatOpenResult };
+  "chat.history": { params: { bot: string; cursor: string }; result: ChatHistoryResult };
+  "performance.read": { params: Record<string, never>; result: PerformanceSnapshot };
   /** `reply_to` = an elsewhere session id: the bridge adds that thread as context for the bot.
-   *  omher posts nothing. */
-  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string }; result: { input_id: string } };
+   *  omher posts nothing. `queued`: a held message; Hermes runs it after current work. */
+  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string; queued?: boolean }; result: { input_id: string; trace_id?: string; admission_id?: string } };
   "chat.interrupt": { params: { bot: string; session?: string }; result: Record<string, never> };
+  /** Steer the main chat's running turn (Hermes' `session.steer`): `queued` = taken, `rejected` = not (no turn runs,
+   *  or Hermes refused). The bridge never sends a refused steer another way. */
+  /** queued = taken; rejected = no agent saw it (safe to send normally); uncertain = may already be with the agent */
+  "chat.steer": { params: { bot: string; text: string; session?: string }; result: { status: "queued" | "rejected" | "uncertain" } };
   "approval.respond": {
     params: { bot: string; request_id: string; choice: ApprovalChoice; session?: string };
     result: Record<string, never>;
@@ -273,17 +376,38 @@ export interface OpMap {
   "plugins.inspect": { params: { bot: string; catalog_name: string }; result: InspectResult };
   "plugins.install": {
     params: { bot: string; catalog_name: string; inspected_sha: string };
-    result: { name: string; enabled: boolean; restart_required: boolean; warnings: string[]; missing_env: string[] };
+    result: { name: string; enabled: boolean; restart_required: boolean; warnings: string[]; missing_env: string[] } & PluginLoad;
   };
-  "plugins.toggle": { params: { bot: string; key: string; enable: boolean }; result: { name: string; restart_required: boolean } };
-  "plugins.update": { params: { bot: string; name: string }; result: { name: string; unchanged: boolean; restart_required: boolean } };
+  "plugins.toggle": { params: { bot: string; key: string; enable: boolean }; result: { name: string; restart_required: boolean } & PluginLoad };
+  "plugins.update": {
+    params: { bot: string; name: string };
+    result: { name: string; unchanged: boolean; restart_required: boolean } & PluginLoad;
+  };
+  /** Hermes' own `reload-plugins` on the bot's gateway: restarts nothing, interrupts nothing. */
+  "plugins.reload": { params: { bot: string; name?: string }; result: { load: "live" | "restart" | "failed"; line?: string; missing?: string[]; restart_bot?: string } };
+  /** Hermes' own `hermes -p <gateway> gateway restart` of the process that serves `bot` (`--yes` only with
+   *  `interrupt`, right after a refusal); ok names every bot that went down with it. */
+  "bots.restart": { params: { bot: string; interrupt?: boolean }; result: RestartResult };
+  /** Which gateway process serves `bot` and every bot that restarts with it. */
+  "bots.restart_scope": { params: { bot: string }; result: RestartScope };
+  /** A forwarded peer's hello and bots.list, for the confirm card; attaches nothing. */
+  "peers.probe": { params: { url: string; label?: string }; result: PeerProbe };
+  /** The shell's link to a peer is up: its bots join bots.list as `<peer>:<name>`. */
+  "peers.attach": { params: { peer: string; label: string; host: string; url: string }; result: { peer: string; bots: Bot[] } };
+  "peers.detach": { params: { peer: string }; result: Record<string, never> };
   "plugins.remove": { params: { bot: string; name: string }; result: { name: string } };
   "models.options": { params: { bot: string }; result: ModelOptions };
+  /** Can the bot answer (read-only)? With `provider` (openai-codex, anthropic or nous) the strict check for it. */
+  "bots.ready": { params: { bot: string; provider?: string }; result: BotReady };
   "chat.set_model": {
-    params: { bot: string; model?: string; provider?: string; reasoning?: string; session?: string };
-    result: ModelCurrent;
+    params: { bot: string; model?: string; provider?: string; reasoning?: string; confirm?: string; session?: string };
+    result: ModelChangeResult;
   };
   /** Display name only; "" goes back to the profile's own name. The profile id never changes. */
+  "bots.create": {
+    params: { name: string; display_name: string; source: string; description?: string; soul?: string };
+    result: { bot: Bot; warning?: string };
+  };
   "bots.rename": { params: { bot: string; name: string }; result: { display_name: string } };
   "bots.avatar": { params: { bot: string }; result: { rev: number | null; data: string | null } };
   "bots.set_avatar": {
@@ -353,6 +477,8 @@ export interface MediaFile {
   /** The bytes; absent when `info` was asked or the file is over 25 MB (`too_big`). */
   data_base64?: string;
   too_big?: boolean;
+  /** The file is on another computer (a bot over SSH): its bytes came over the link, and its path is not opened here. */
+  remote?: boolean;
 }
 
 export type AccountCli = "claude" | "codex" | "pi" | "omp" | "grok" | "gemini";
@@ -487,10 +613,17 @@ interface EventBase {
   session?: string;
 }
 
+export type SubagentState = "queued" | "running" | "thinking" | "done" | "failed" | "cancelled";
+/** The subagent an approval or question came from. */
+export type AskSubagent = { id: string; name: string };
+
 export type BridgeEvent =
+  | (EventBase & { event: "model.changed"; model: string; provider: string; reasoning: string })
   | (EventBase & { event: "turn.start" })
-  | (EventBase & { event: "status"; text: string })
-  | (EventBase & { event: "thinking" })
+  /** `retry`: the agent tries the turn again by itself (OmO's `auto_retry_start`); the line says which try. */
+  | (EventBase & { event: "status"; text: string; retry?: { attempt: number; max: number } })
+  /** The agent is thinking; `text` is what it thought, when the agent sends it (SESSIONS agents). */
+  | (EventBase & { event: "thinking"; text?: string })
   | (EventBase & {
       event: "tool.start";
       tool_id: string;
@@ -500,9 +633,36 @@ export type BridgeEvent =
       dag?: { run: string; node: string }[];
     })
   | (EventBase & { event: "tool.end"; tool_id: string; name: string; ok: boolean; ms: number })
+  /** A subagent's latest state, in ONE agent-neutral shape: Hermes' `subagent.*` events of a bot's turn (clipped by the
+   *  bridge), and every SESSIONS agent's subagents (Claude Code Agent/Task, Codex sub-agent threads, OmO `task`; any
+   *  later agent emits the same). The same `id` updates the same row; `delegation` groups one fan-out. */
+  | (EventBase & {
+      event: "subagent";
+      id: string;
+      /** Which agent reported it (a session's CLI: "claude", "codex", "omo", …); absent for a bot's own. */
+      agent?: string;
+      /** Its name or type ("general-purpose", "first-line"), when the agent gives one apart from its task. */
+      name?: string;
+      /** The fan-out it belongs to (absent on the first, queued event). */
+      delegation?: string;
+      index: number;
+      count: number;
+      goal: string;
+      dag?: { run: string; node: string };
+      model?: string;
+      state: SubagentState;
+      /** The tool it is running and that tool's line, or its batched progress. */
+      tool?: string;
+      step?: string;
+      /** A file edit step's change per file (as `tool.diff` gives it for the session's own edits). */
+      diff?: DiffFile[];
+      /** Its result line (done) or error (failed). */
+      summary?: string;
+      seconds?: number;
+    })
   | (EventBase & { event: "skill"; name: string })
   | (EventBase & { event: "delta"; text: string })
-  | (EventBase & { event: "message"; id: string; text: string })
+  | (EventBase & { event: "message"; id: string; text: string; watch?: WatchTag })
   /** A folder chat's name from Hermes (its titler or /title); `session` names the folder chat. */
   | (EventBase & { event: "session.title"; title: string })
   | (EventBase & {
@@ -511,15 +671,20 @@ export type BridgeEvent =
       title: string;
       command: string;
       choices: ApprovalChoice[];
+      /** Asked inside a subagent: which one (its id and name or task). */
+      subagent?: AskSubagent;
       /** The folder the command runs in (agent sessions say it). */
       cwd?: string;
       /** Seconds the gateway waits before giving up on it, when it says. */
       timeout_s?: number;
+      /** The plan the agent asks to start on (Claude Code's plan mode), as the markdown it wrote. */
+      plan?: string;
     })
   | (EventBase & {
       event: "clarify.request";
       request_id: string;
       question: string;
+      subagent?: AskSubagent;
       choices?: string[];
       multi_select?: boolean;
       /** Set when the bot asks several questions at once (an interview); `question` is then the first. */
@@ -533,6 +698,8 @@ export type BridgeEvent =
   | (EventBase & { event: "bot.status"; status: BotStatus; running: boolean })
   | (EventBase & { event: "elsewhere.update" })
   | (EventBase & { event: "bots.update" })
+  /** After `bots.restart` said ok: the bot is attached again (`ok`), or did not come back in time. */
+  | (EventBase & { event: "bot.restarted"; ok: boolean })
   /** omher accounts changed (added, removed, made active); the Accounts views re-read accounts.list. */
   | (EventBase & { event: "accounts.update" })
   | (EventBase & { event: "folder.closed"; reason?: string })
@@ -542,6 +709,9 @@ export type BridgeEvent =
       name: string;
       status: string;
       ts: number;
+      /** A bot-chat automation's run that handed its result to this Bot Chat: the answer arrives as a `message`
+       *  with `watch`, so the run itself draws no line. A silent run sends no `routine.ran` at all. */
+      delivered?: string;
     })
   /** A bot's jobs.json changed (a run, a pause, an edit): the Automations page re-reads. */
   | (EventBase & { event: "routines.update" })
@@ -558,7 +728,32 @@ export type BridgeEvent =
     })
   /** A plugin folder appeared in the bot's profile (the bot installed it from chat). */
   | (EventBase & { event: "plugin.added"; name: string; title: string; tools: number; hooks: number; ts: number })
-  | (EventBase & { event: "plugins.update" });
+  | (EventBase & { event: "plugins.update" })
+  // a SESSIONS chat: a message sent while a turn ran waits until the agent takes it (or Stop drops it)
+  | (EventBase & { event: "message.queued" | "message.taken" | "message.dropped"; id: string })
+  /** A SESSIONS file edit's change, per file (replaces what an earlier `tool.diff` of the same step said). */
+  | (EventBase & { event: "tool.diff"; tool_id: string; files: DiffFile[] })
+  /** A SESSIONS agent's own todo list or plan as it stands now (the whole list each time). */
+  | (EventBase & { event: "plan"; items: PlanItem[] })
+  /** A SESSIONS agent took back the person's last message and what came after it (its own rewind); `text` is
+   *  that message as the agent read it, when it says. */
+  | (EventBase & { event: "rewound"; text?: string });
+
+/** One file's change in the diff view. `lines` start with `+`, `-`, ` ` or `@@`; `more` lines were not sent. */
+export interface DiffFile {
+  path: string;
+  kind: "add" | "delete" | "update";
+  lines: string[];
+  added: number;
+  removed: number;
+  more?: number;
+}
+
+/** One row of an agent's todo list. */
+export interface PlanItem {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
 
 export type EventName = BridgeEvent["event"];
 export type EventOf<K extends EventName> = Extract<BridgeEvent, { event: K }>;

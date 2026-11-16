@@ -62,7 +62,14 @@ before each prompt that starts a turn, and the default again when the mtime
 moved, and, beyond opening and closing
 sessions (`client.capabilities`, `session.create`, `session.resume`,
 `session.close`), sends only what this bullet names below, plus
-`session.history` again when Hermes refuses a rewind; when no turn runs, a
+`session.history` again when Hermes refuses a rewind; in the `/sessions`
+picker, only on the person's keys, `session.title` (the highlighted session's
+new title, after Ctrl+R and Enter), `session.delete` (after a second
+Ctrl+D; never the session it is in) and `session.transcript` (after Enter on
+a row Hermes lists as not resumable, a read that writes nothing), the first
+two of which the gateway child sends to a
+shared gateway as the owner's revision-fenced `session.mutate rename` and
+`delete`, reading the revision first with `session.resume`; when no turn runs, a
 steer Hermes refused as an ordinary prompt; and, at once, the decline frame for
 a request it cannot show (a vault unlock or save-login prompt, a terminal,
 preview or window read, a preview action, a tour, a display sudo install, a
@@ -72,7 +79,10 @@ at once a request it cannot show (listed above): Esc or Ctrl+C declines, an
 approval decline is an explicit deny and then interrupts the running turn
 (`session.interrupt`, only while a turn runs; every deny the person gives an
 approval does, `d`, `n` and Enter on deny too, except the tell row's below),
-allowing a command takes the arrows and then Enter, and a request the gateway
+an approval opens with allow once highlighted (the owner's choice of
+2026-11-15), so an allow is still a key the person pressed (Enter on that row)
+and never a key typed for the composer as the slot opened, which the app
+ignores for a moment after any slot opens; a request the gateway
 withdraws (its own timeout, an interrupt) closes without an answer. Hermes'
 `always` choice is offered only when the request lists it and is sent, like any
 allow, only on the person's arrows and then Enter; saving it as a permanent
@@ -267,12 +277,24 @@ memory (`/proc/<pid>/statm`, or `proc_pidinfo`, which answers only for this
 user's processes); it sends no other signal, and nothing to the gateway. It reads on one thread for the session, never on the render path,
 and reads nothing while the board is closed.
 
+## The reasoning before a silent question
+
+When Hermes opens a clarify question, the TUI reads its own session's newest
+assistant row from the session's `state.db` (`src/tui/silent_lead.py`),
+opened `mode=ro` (immutable when no connection has it open, as the bot board
+opens it), once per question, waiting at most a quarter second on a writer.
+Only when that row made the very clarify call being opened (matched by its
+call id), wrote no reply text and carries reasoning does the question show
+that reasoning, dim, above itself. It writes nothing, sends nothing to the
+gateway, keeps the text only while the question is open, and draws nothing
+when anything is missing or the read fails.
+
 ## Sessions it refuses, and what it writes
 
 It never attaches to a session another runtime owns: when the launcher sets
 `HERMES_TUI_GATEWAY_URL`, it exits and names `hermes`. It writes no transcript,
-attachment, secret or server-request frame to disk or to a log, and prompt text
-in one place only: each line the person sends from the composer is appended to
+attachment, secret or server-request frame to disk or to a log. New conversation
+prompt text goes in one place only: each line the person sends from the composer is appended to
 Hermes' own input history, `$HERMES_HOME/.hermes_history`, the file `hermes
 --tui` reads and writes, in its format (`+`-prefixed lines under a `#`
 timestamp line). It only appends there (opened `O_APPEND` and `O_NOFOLLOW`,
@@ -285,7 +307,15 @@ and `O_NONBLOCK`), keeps its bytes in memory and nowhere else, and has
 Hermes let go of it (`image.detach`). A prompt that goes with the image
 stages those bytes again through Hermes' `image.attach_bytes`, the call
 Hermes' own remote clients use, and nothing else is staged until Hermes has
-taken them. The other files it writes are metadata: the
+taken them. The explicit `/omh-model` save also edits the person's existing
+`routing/identities.json` under the active OMH home: only the chosen identities'
+`model_chain` and `enabled` fields change. Its per-file atomic replacement
+preserves existing prompt strings and unrelated profiles, including invalid
+siblings; it does not create or edit prompts, nor archive conversation text.
+Cancel and no-op saves leave it untouched. Validation precedes either a chains
+or identities write, but the two files are not a transaction: a partial I/O
+failure reports which category edits were already saved. All remaining files
+it writes are metadata: the
 launcher's active-session file (the session id); when `omh` launched it, the
 file `omh` named in `OMH_TUI_SESSION_FILE`, in `omh`'s private 0700 launch
 directory (opened `O_NOFOLLOW`, mode 0600), holding the open session's id, the
@@ -294,7 +324,10 @@ before, which `omh` reads for its exit card and removes with the directory;
 the relaunch marker beside it, when the person picked a restart after an update;
 and what OMH's own HUD reader
 and model-chain picker already write under the OMH home (the HUD fan-out cache
-and its lock, and the chains `/omh-model` saves), and a fallback marker at the
+and its lock, and the chains `/omh-model` saves); the models the person last
+switched to, `<omh_home>/tui/recent-models.json` (the model and provider of
+each switch Hermes confirmed, at most five, nothing else, written atomically;
+bare `/model` lists them first, and without an OMH home nothing is kept); and a fallback marker at the
 path `omh` named, holding what the TUI printed about why it did not start,
 which `omh` prints again once Hermes' own terminal (which clears the screen)
 closes, and then removes. A pasted clipboard image is saved by Hermes' own

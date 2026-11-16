@@ -2,8 +2,11 @@
 // else the agent's own title, else a summary of the first message, else the folder), line 2 the folder and the
 // agent. Double-click the name or right-click › Rename to name it; Enter saves, Esc cancels, empty = automatic.
 import { expect, test, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+
+test.skip(true, "SESSIONS hidden in favour of bot threads (plan 2026-11-15)");
 
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
 const SHOTS = process.env.OMHER_SHOTS || "";
@@ -62,7 +65,7 @@ test.beforeEach(async () => {
 
 test("a first message names the session as it starts it (a draft is New session until then)", async ({ page }) => {
   await open(page);
-  await start(page, "codex", "/Users/you/work/api-server", "Add pagination to the users endpoint");
+  await start(page, "codex", "/home/you/work/api-server", "Add pagination to the users endpoint");
   const row = rows(page).first();
   await expect(row.getByTestId("session-name")).toHaveText("Add pagination to the users endpoint");
   await expect(row.getByTestId("session-name")).toHaveAttribute("data-source", "prompt");
@@ -72,7 +75,7 @@ test("a first message names the session as it starts it (a draft is New session 
 
 test("a row shows a summary of the first message, and the folder moves to line 2", async ({ page }) => {
   await open(page);
-  await start(page, "claude", "/Users/you/code/web-app");
+  await start(page, "claude", "/home/you/code/web-app");
   const row = rows(page).first();
   // no message yet: the folder is the name, line 2 the agent alone
   await expect(row.getByTestId("session-name")).toHaveText("web-app");
@@ -97,10 +100,10 @@ test("a row shows a summary of the first message, and the folder moves to line 2
   await expect(page.getByTestId("session-title")).toHaveText("Fix the login redirect loop after OAuth…");
   await expect(page.getByTestId("session-agent")).toHaveText("Claude Code");
   await expect(page.getByTestId("session-cwd")).toHaveText("~/code/web-app");
-  await expect(page.getByTestId("session-cwd").locator("..")).toHaveAttribute("title", "/Users/you/code/web-app");
+  await expect(page.getByTestId("session-cwd").locator("..")).toHaveAttribute("title", "/home/you/code/web-app");
 
   // Korean, with a command and a file reference in front
-  await start(page, "codex", "/Users/you/work/api-server");
+  await start(page, "codex", "/home/you/work/api-server");
   await say(page, "/review @src/routes/users.ts 사용자 목록 API에 페이지네이션 추가해줘. 테스트도 같이");
   const ko = rows(page).first();
   await expect(ko.getByTestId("session-name")).toHaveText("사용자 목록 API에 페이지네이션 추가해줘");
@@ -127,7 +130,7 @@ test("a row shows a summary of the first message, and the folder moves to line 2
 
 test("the agent's own title replaces the summary, live", async ({ page }) => {
   await open(page);
-  await start(page, "claude", "/Users/you/code/web-app");
+  await start(page, "claude", "/home/you/code/web-app");
   const row = rows(page).first();
   await say(page, "Fix the login redirect loop after OAuth sign-in");
   await expect(row.getByTestId("session-name")).toHaveAttribute("data-source", "prompt");
@@ -141,7 +144,7 @@ test("the agent's own title replaces the summary, live", async ({ page }) => {
 
 test("the title Claude Code wrote in its own session file arrives after a turn (cli.title)", async ({ page }) => {
   await open(page);
-  await start(page, "claude", "/Users/you/code/web-app");
+  await start(page, "claude", "/home/you/code/web-app");
   const row = rows(page).first();
   await say(page, "fix the flaky checkout test");
   await expect(row.getByTestId("session-name")).toHaveText("fix the flaky checkout test");
@@ -150,21 +153,29 @@ test("the title Claude Code wrote in its own session file arrives after a turn (
   await expect(row.getByTestId("session-name")).toHaveText("Flaky checkout test");
   const asked = ((await mock("mock.calls")).calls as { op: string; params: Record<string, unknown> }[]).filter((c) => c.op === "cli.title");
   expect(asked.length).toBeGreaterThan(0);
-  expect(asked[0].params).toMatchObject({ agent: "claude", session: CLAUDE_SESSION, cwd: "/Users/you/code/web-app" });
+  expect(asked[0].params).toMatchObject({ agent: "claude", session: CLAUDE_SESSION, cwd: "/home/you/code/web-app" });
 });
 
 test("an oh-my-hermes session takes the title Hermes gives the folder chat", async ({ page }) => {
+  let fid: string | undefined;
+  page.on("websocket", (socket) => {
+    const opens = new Set<string>();
+    socket.on("framesent", ({ payload }) => {
+      const frame = JSON.parse(String(payload));
+      if (frame.op === "folder.open") opens.add(frame.id);
+    });
+    socket.on("framereceived", ({ payload }) => {
+      const frame = JSON.parse(String(payload));
+      if (opens.has(frame.id) && frame.ok) fid = frame.result.session;
+    });
+  });
   await open(page);
-  await start(page, "omh", "/Users/you/work/api");
+  await start(page, "omh", "/home/you/work/api");
   const row = rows(page).first();
   await expect(row.getByTestId("session-name")).toHaveText("api");
   const opened = ((await mock("mock.calls")).calls as { op: string; params: Record<string, unknown> }[]).find((c) => c.op === "folder.open")!;
   expect(opened).toBeTruthy();
-  const fid = await page.evaluate(async () => {
-    const m = await import(/* @vite-ignore */ "/src/sessions/sessions.ts");
-    const s = m.getSessions();
-    return s.getState().list[0].agentSession as string;
-  });
+  await expect.poll(() => fid).toBeTruthy();
   await mock("mock.emit", { events: [{ event: "session.title", bot: "kami", session: fid, title: "Audit the API routes" }] });
   await expect(row.getByTestId("session-name")).toHaveText("Audit the API routes");
   await expect(row.getByTestId("session-sub")).toHaveText("api · oh-my-hermes");
@@ -172,7 +183,7 @@ test("an oh-my-hermes session takes the title Hermes gives the folder chat", asy
 
 test("rename inline: double-click or right-click › Rename; Enter saves, Esc cancels, empty restores the automatic name", async ({ page }) => {
   await open(page);
-  await start(page, "claude", "/Users/you/code/web-app");
+  await start(page, "claude", "/home/you/code/web-app");
   const row = rows(page).first();
   const name = row.getByTestId("session-name");
   await say(page, "Fix the login redirect loop");
@@ -208,7 +219,7 @@ test("rename inline: double-click or right-click › Rename; Enter saves, Esc ca
   // right-click › Rename; an empty name goes back to the automatic one (now the agent's title)
   await row.click({ button: "right" });
   const menu = page.getByTestId("session-row-menu");
-  await expect(menu.getByRole("menuitem")).toHaveText(["Rename", "Close session"]);
+  await expect(menu.getByRole("menuitem")).toHaveText(["Rename", /^Show in (Finder|Explorer|file manager)$/, "Open in Terminal", "Copy conversation id", "New session here", "Close session"]);
   await menu.getByTestId("session-rename").click();
   await expect(input).toBeFocused();
   await input.fill("   ");
@@ -227,7 +238,7 @@ test("rename inline: double-click or right-click › Rename; Enter saves, Esc ca
 
 test("a saved name comes back when the same conversation runs again", async ({ page }) => {
   await open(page, { [`claude:${CLAUDE_SESSION}`]: "Kept name" });
-  await start(page, "claude", "/Users/you/code/web-app");
+  await start(page, "claude", "/home/you/code/web-app");
   await expect(rows(page).first().getByTestId("session-name")).toHaveText("Kept name");
 });
 
@@ -236,13 +247,13 @@ for (const theme of ["dark", "light"] as const) {
     test.skip(!SHOTS, "set OMHER_SHOTS to a folder to save screenshots");
     mkdirSync(SHOTS, { recursive: true });
     await open(page);
-    await page.evaluate(async (t) => (await import(/* @vite-ignore */ "/src/state/store.ts")).getStore().actions.setTheme(t), theme);
-    await start(page, "claude", "/Users/you/code/web-app");
+    await chooseTheme(page, theme);
+    await start(page, "claude", "/home/you/code/web-app");
     await say(page, "Fix the login redirect loop after OAuth sign-in. It started after the last deploy.");
     await say(page, "/title Fix OAuth login redirect loop");
-    await start(page, "codex", "/Users/you/work/api-server");
+    await start(page, "codex", "/home/you/work/api-server");
     await say(page, "/review @src/routes/users.ts 사용자 목록 API에 페이지네이션 추가해줘");
-    await start(page, "claude", "/Users/you/notes");
+    await start(page, "claude", "/home/you/notes");
     await say(page, "```\nTODO\n```\nSummarize this week's meeting notes into action items");
     await page.mouse.move(900, 790);
     await page.waitForTimeout(400);

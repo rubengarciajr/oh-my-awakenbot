@@ -2,6 +2,7 @@
 // their channel when the bot knows it), a link with its own text keeps it after the mark, a lookalike host
 // stays a plain link, clicks go through the opener, and a chip never makes its line taller.
 import { expect, test, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import LINKS from "./fixtures/links.json" with { type: "json" };
 
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
@@ -52,7 +53,6 @@ test.beforeEach(async () => {
 test("six bare Slack thread URLs become Slack chips named by their channel, the URL in the tooltip", async ({ page }) => {
   await open(page);
   const b = slackBubble(page);
-  await b.scrollIntoViewIfNeeded();
   const chips = b.getByTestId("link-chip");
   await expect(chips).toHaveCount(7);
   // channels the bot knows get their name; the one it does not know keeps the fallback
@@ -90,7 +90,7 @@ test("six bare Slack thread URLs become Slack chips named by their channel, the 
 test("chips per service: mark, kind and label; a lookalike host stays a plain link", async ({ page }) => {
   await open(page);
   const b = servicesBubble(page);
-  await b.scrollIntoViewIfNeeded();
+  await expect(b).toBeAttached();
   const rows = await b.getByTestId("link-chip").evaluateAll((els) =>
     els.map((a) => [a.getAttribute("data-service"), a.getAttribute("data-kind"), a.querySelector(".lk-t")!.textContent, a.querySelector("svg")!.getAttribute("data-brand") ?? a.querySelector("svg")!.getAttribute("data-src")]),
   );
@@ -140,7 +140,6 @@ test("chips per service: mark, kind and label; a lookalike host stays a plain li
 test("labels are readable at rest and ink on hover; no pill fill at rest", async ({ page }) => {
   await open(page);
   const chip = slackBubble(page).getByTestId("link-chip").first();
-  await chip.scrollIntoViewIfNeeded();
   const lum = (c: string) => {
     const [r, g, b] = c.match(/[\d.]+/g)!.slice(0, 3).map((v) => {
       const s = Number(v) / 255;
@@ -153,10 +152,7 @@ test("labels are readable at rest and ink on hover; no pill fill at rest", async
     return (x + 0.05) / (y + 0.05);
   };
   for (const theme of ["dark", "light"] as const) {
-    await page.evaluate(async (t) => {
-      const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-      m.getStore().actions.setTheme(t);
-    }, theme);
+    await chooseTheme(page, theme);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await page.mouse.move(1, 1);
     await page.waitForTimeout(300); // the colour eases over 0.12s after the theme switch
@@ -177,7 +173,7 @@ test("a chip opens its URL through the opener, once, and a lookalike link is not
   const opened = await catchOpens(page);
   await open(page);
   const chip = slackBubble(page).getByTestId("link-chip").first();
-  await chip.scrollIntoViewIfNeeded();
+  // Click scrolls and retries if background bot snapshots replace the initial markdown link.
   await chip.click();
   await expect.poll(() => opened).toEqual(["https://sionicai.slack.com/archives/C0BLC924P1P/p1794195216893139"]);
   const yt = servicesBubble(page).locator('[data-testid=link-chip][data-service="youtube"]');

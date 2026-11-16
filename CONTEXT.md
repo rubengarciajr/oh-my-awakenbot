@@ -691,7 +691,9 @@ ledger is the only record of the turn's spend: every API call queues
 finalize and again when the quiet CLI exits. The home belongs to that child
 alone, so every row in the file is its spend and the rows are summed; the
 result is the `-z` report's vocabulary, which the observation builder already
-reads. The child runs with `--toolsets file --safe-mode`, so no delegate
+reads. The child runs with `--toolsets file --safe-mode` (a paired-run arm
+uses `file,skills` in its declared arm home, which also has no delegate
+toolset, and the read skips rows the home held before the cell), so no delegate
 subagent opens a row of its own and a context-compression rotation is the only
 source of a second row. The sum equals the `-z` counters only because of that
 restriction: a delegate child writes its own `sessions` row, and the `-z`
@@ -710,6 +712,21 @@ empty result as a measured zero, treating a `timed_out` or `cancelled`
 result's usage as complete (the child was killed, deltas still in Hermes'
 daemon token-writer queue are lost, and the read is a lower bound with no
 marker of its own)
+
+**Paired-run cell trace**:
+The same disposable-home `state.db` read for one confirmed paired-run cell
+(`src/coding/hermes_child_trace.py`), taken after the cell's child exits and
+before its arm home is removed, signed into the receipt as `cell_trace`.
+Besides the `sessions` token and `api_call_count` columns it reads
+`messages.tool_calls` of assistant rows for tool names only (a `skill_view`
+argument is parsed only for its `name`), the length of
+`COALESCE(messages.api_content, content)` of the first user row, and the
+length of the system prompt, inline or through `system_prompts.prompt` by
+`sessions.system_prompt_hash`. Lengths and names leave the read; text never
+does. Same Hermes-private coupling and same quiet-on-shape-change rule as the
+usage ledger above.
+_Avoid_: keeping any message text, counting rows the home held before the
+cell, reading it outside a paired-run arm home, treating a null trace as zero
 
 **Stored prompt identity**:
 The `Model:` line of the identity trailer Hermes ends every system prompt

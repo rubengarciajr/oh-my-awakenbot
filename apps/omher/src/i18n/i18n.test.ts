@@ -91,14 +91,34 @@ describe("i18n", () => {
 
   it("keeps brand, model and command names in Latin in every language", () => {
     for (const l of LANGS) {
-      for (const k of ["onb.sessions.body", "update.thenMixed", "acc.headerLine", "gate.text", "cmp.skillHint"] as Key[]) {
+      for (const k of ["omh.pop.body", "update.thenMixed", "acc.headerLine", "gate.text", "cmp.skillHint"] as Key[]) {
         for (const name of DICT.en[k].match(/Claude Code|Codex|Hermes|oh-my-hermes|omher|OmO|pi\b/g) ?? []) expect(DICT[l][k], `${l} ${k}`).toContain(name);
       }
     }
   });
 
+  it("the terminal's contrast hints promise 4.5:1 for text colours and say dim text can stay below it", () => {
+    for (const l of LANGS) {
+      for (const k of ["term.contrastAutoHint", "term.contrastHighHint"] as Key[]) {
+        expect(DICT[l][k], `${l} ${k}`).toContain("4.5:1");
+        expect(DICT[l][k], `${l} ${k}`).toMatch(/dim/i);
+      }
+      expect(DICT[l]["term.contrastThemeHint"], l).not.toMatch(/dim|4\.5/i);
+    }
+    expect(DICT.en["term.contrastHighHint"]).toBe("Text colours are lifted to 4.5:1 on every background. Dim text can stay below that.");
+  });
+
   it("writes Simplified, not Traditional, Chinese", () => {
-    const traditional = /[們這個說時麼對會還點開關發連線帳號設處於與為將應單選擇檔顯視窗鍵輸]/;
+    const traditional = /[們這個說時麼對會還點開關發連線帳號設處於與為將應單選擇檔顯視鍵輸]/;
     for (const k of keys) expect(DICT.zh[k], k).not.toMatch(traditional);
+  });
+
+  it("zh calls a bot's reply 回复, and Settings descriptions end with 。", () => {
+    for (const k of ["sounds.hint", "set.reasoningHint", "key.stop", "row.answering", "ss.answering", "note.failed"] as Key[]) {
+      expect(DICT.zh[k], k).toContain("回复");
+      expect(DICT.zh[k], k).not.toContain("回答");
+    }
+    const hints = keys.filter((k) => /^(set|look)\.\w*Hint2?$/.test(k) || ["sounds.hint", "lang.hint", "set.profileDefault", "set.profileHere"].includes(k));
+    for (const k of hints) expect(DICT.zh[k], k).toMatch(/。$/);
   });
 });

@@ -1,5 +1,6 @@
 // Shell: sidebar, timeline bubbles, composer send/stop, theme, header right side, screenshots.
 import { expect, test, type Page } from "@playwright/test";
+import { chooseTheme } from "./helpers/appearance";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,13 +30,6 @@ async function mock(op: string, params: Record<string, unknown> = {}): Promise<a
   return reply.result;
 }
 
-async function setTheme(page: Page, theme: "system" | "dark" | "light") {
-  await page.evaluate(async (t) => {
-    const m = await import(/* @vite-ignore */ "/src/state/store.ts");
-    m.getStore().actions.setTheme(t);
-  }, theme);
-}
-
 async function open(page: Page) {
   await page.goto("/");
   await expect(page.getByTestId("bot-kami")).toBeVisible();
@@ -52,19 +46,20 @@ test("sidebar lists the mock bots and search filters them", async ({ page }) => 
   await open(page);
   const side = page.getByTestId("sidebar");
   for (const name of ["Kami", "Friren", "Hermes"]) await expect(side.getByText(name, { exact: true })).toBeVisible();
-  await expect(side.getByText("omher", { exact: true })).toBeVisible();
+  await expect(side.getByRole("img", { name: "Awaken Church" })).toBeVisible();
   for (const nav of ["Settings", "You"]) await expect(side.getByText(nav, { exact: true })).toBeVisible();
   // Automations (with every bot's job count) and Plugins open their pages
   await expect(side.getByTestId("nav-automations")).toHaveText("Automations6");
   await expect(side.getByTestId("nav-plugins")).toHaveText("Plugins");
   for (const id of ["nav-automations", "nav-plugins"]) await expect(side.getByTestId(id)).toBeEnabled();
-  // Kami starts running in the mock -> live ring around its face
+  // Observe a running turn rather than relying on the seed's stale running flag.
+  await mock("mock.emit", { events: [{ event: "turn.start", bot: "kami" }] });
   await expect(page.getByTestId("bot-kami").getByTestId("live-ring")).toBeVisible();
-  await page.getByLabel("Search bots").fill("fri");
+  await page.getByLabel("Search bots and sessions").fill("fri");
   await expect(page.getByTestId("bot-friren")).toBeVisible();
   await expect(page.getByTestId("bot-kami")).toHaveCount(0);
   await expect(page.getByTestId("bot-default")).toHaveCount(0);
-  await page.getByLabel("Search bots").fill("");
+  await page.getByLabel("Search bots and sessions").fill("");
   await expect(page.getByTestId("bot-default")).toBeVisible();
 });
 
@@ -83,11 +78,11 @@ test("select Kami shows history as filled bubbles; switching bots swaps the chat
     const cs = getComputedStyle(el);
     return { bg: cs.backgroundColor, border: cs.borderTopWidth, radius: parseFloat(cs.borderTopLeftRadius) };
   });
-  expect(style.bg).toBe("rgb(29, 26, 32)"); // #1d1a20
+  expect(style.bg).toBe("rgb(35, 36, 40)"); // #232428
   expect(style.border).toBe("0px");
   expect(style.radius).toBeLessThanOrEqual(10);
   const me = await tl.getByTestId("bubble-user").first().locator(".b").evaluate((el) => getComputedStyle(el).backgroundColor);
-  expect(me).toBe("rgb(60, 42, 59)"); // #3c2a3b (OMH soft tint)
+  expect(me).toBe("rgb(45, 46, 50)"); // #2d2e32 (OMH soft tint)
   await expect(page.getByTestId("header").getByText("Kami", { exact: true })).toBeVisible();
 });
 
@@ -121,7 +116,8 @@ test("Stop interrupts the running turn", async ({ page }) => {
   expect(ops).toContain("chat.interrupt");
 });
 
-test("slash shows the skill hint", async ({ page }) => {
+test("slash shows the skill hint when the bot has no skill list", async ({ page }) => {
+  await mock("mock.noSkills", { bot: "kami" });
   await open(page);
   await page.getByTestId("composer").fill("/pl");
   await expect(page.getByTestId("skill-hint")).toBeVisible();
@@ -129,14 +125,15 @@ test("slash shows the skill hint", async ({ page }) => {
   await expect(page.getByTestId("skill-hint")).toHaveCount(0);
 });
 
-test("header right holds only the model pill; name toggles the details column", async ({ page }) => {
+test("header right holds the model pill and the panel button; name toggles the details column", async ({ page }) => {
   await open(page);
   const right = page.getByTestId("head-right");
-  await expect(right.locator(":scope > *")).toHaveCount(1);
+  await expect(right.locator(":scope > *")).toHaveCount(2);
   await expect(right).toContainText("Opus 5.5");
   await expect(right).toContainText("High");
-  // at most one interactive control (the model picker slot renders one button; the fallback none)
-  expect(await right.locator("button, a, [role=button], input, select").count()).toBeLessThanOrEqual(1);
+  // two controls: the model picker's one button and the panel button
+  expect(await right.locator("button, a, [role=button], input, select").count()).toBeLessThanOrEqual(2);
+  await expect(right.locator(":scope > *").last()).toHaveAttribute("data-testid", "panel-button");
   const details = page.getByTestId("details");
   expect((await details.boundingBox())?.width ?? 0).toBeLessThan(2);
   await page.getByTestId("who").click();
@@ -145,7 +142,7 @@ test("header right holds only the model pill; name toggles the details column", 
   await expect.poll(async () => Math.round((await details.boundingBox())?.width ?? 0)).toBeLessThan(2);
 });
 
-test("theme follows the store; dark and light screenshots", async ({ page }) => {
+test("theme follows the selected preference; dark and light screenshots", async ({ page }) => {
   mkdirSync(SHOTS, { recursive: true });
   await page.emulateMedia({ colorScheme: "dark" });
   await page.addInitScript(() => localStorage.removeItem("omher.theme"));
@@ -158,8 +155,7 @@ test("theme follows the store; dark and light screenshots", async ({ page }) => 
   await page.getByTestId("composer").blur();
   await page.screenshot({ path: join(SHOTS, "shell-dark.png") });
 
-  // The store's setTheme (same module instance the app uses; Vite serves it by URL).
-  await setTheme(page, "light");
+  await chooseTheme(page, "light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(page.getByTestId("bubble-user").first()).toBeVisible();
   const bg = await page.getByTestId("bubble-bot").first().locator(".b").evaluate((el) => getComputedStyle(el).backgroundColor);
@@ -170,7 +166,7 @@ test("theme follows the store; dark and light screenshots", async ({ page }) => 
 
   // persisted, and "system" follows the OS live
   expect(await page.evaluate(() => localStorage.getItem("omher.theme"))).toBe("light");
-  await setTheme(page, "system");
+  await chooseTheme(page, "system");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");

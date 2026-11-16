@@ -61,12 +61,12 @@ test("defaults: OMH colours, soft bubbles, small text", async ({ page }) => {
   await expect(html).toHaveAttribute("data-bubbles", "soft");
   await expect(html).toHaveAttribute("data-text", "small");
   expect(await css(page, "bubble-bot", "font-size")).toBe("13px");
-  expect(await css(page, "bubble-bot", "background-color")).toBe("rgb(29, 26, 32)");
+  expect(await css(page, "bubble-bot", "background-color")).toBe("rgb(35, 36, 40)");
 });
 
 test("colour set: picking one repaints your bubble, links and accent, and the logo stays", async ({ page }) => {
   await open(page);
-  const logoBefore = await page.locator(".brand b").evaluate((e) => getComputedStyle(e).backgroundImage);
+  const logoBefore = await page.locator(".brand .church-wordmark").evaluate((e) => getComputedStyle(e).backgroundImage);
   const meBefore = await css(page, "bubble-user", "background-color");
   await appearance(page);
   await expect(page.getByTestId("palette-omh")).toHaveAttribute("aria-checked", "true");
@@ -81,7 +81,7 @@ test("colour set: picking one repaints your bubble, links and accent, and the lo
   await page.getByRole("button", { name: "Close settings" }).click();
   expect(await css(page, "bubble-user", "background-color")).not.toBe(meBefore);
   expect(await css(page, "bubble-user", "background-color")).toBe("rgb(31, 49, 80)"); // #1f3150
-  expect(await page.locator(".brand b").evaluate((e) => getComputedStyle(e).backgroundImage)).toBe(logoBefore);
+  expect(await page.locator(".brand .church-wordmark").evaluate((e) => getComputedStyle(e).backgroundImage)).toBe(logoBefore);
   // light theme has its own tint for the same set
   await page.evaluate(async () => {
     const m = await import(/* @vite-ignore */ "/src/state/store.ts");
@@ -98,7 +98,7 @@ test("bubble styles: solid puts your bubble in the accent; open drops the bot's 
   await expect(page.getByTestId("bubbles-hint")).toHaveText("Your messages in the accent colour");
   await page.getByRole("button", { name: "Close settings" }).click();
   expect(await css(page, "bubble-user", "background-image")).toContain("linear-gradient");
-  expect(await css(page, "bubble-user", "color")).toBe("rgb(255, 255, 255)");
+  expect(await css(page, "bubble-user", "color")).toBe("rgb(12, 12, 14)");
 
   await appearance(page);
   await page.getByTestId("bubbles-seg").getByRole("radio", { name: "Open" }).click();

@@ -56,6 +56,36 @@
   max-height: 160px;
   overflow-y: auto;
 }
+/* plan mode's plan: rendered as an answer is, in its own scroll; the card keeps its width */
+.card-plan {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--body);
+  background: var(--bg);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.card:has(.card-plan) {
+  width: 76%;
+}
+/* the plan's own headings stay under the card's question */
+.card-plan h1,
+.card-plan h2,
+.card-plan h3,
+.card-plan h4 {
+  font-size: 12.5px;
+}
+.card-who {
+  margin-bottom: 2px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .card-cwd {
   margin-top: -2px;
   font-family: var(--mono);
@@ -97,6 +127,44 @@
 }
 .card-btn.soft:not(:disabled):hover {
   background: var(--line-strong);
+}
+/* The approval buttons carry their meaning in colour, the same weight and order (Deny first): Deny in the danger
+   red, Allow once in the link violet, Allow for session in amber, since it allows more than this one command (never
+   green: the broadest choice must not read as the safe one). A tint fill and an edge of the colour, the label in it;
+   on hover the tint deepens. */
+.card-btn.soft.deny,
+.card-btn.soft.once,
+.card-btn.soft.session {
+  --tone: var(--danger);
+  background: color-mix(in srgb, var(--tone) 14%, var(--raise2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 45%, transparent);
+  color: color-mix(in srgb, var(--tone) 80%, var(--ink));
+}
+.card-btn.soft.once {
+  --tone: var(--link);
+}
+.card-btn.soft.session {
+  --tone: #e8a33c;
+}
+[data-theme="light"] .card-btn.soft.session {
+  --tone: #9a5f06;
+}
+[data-theme="light"] .card-btn.soft.deny,
+[data-theme="light"] .card-btn.soft.once,
+[data-theme="light"] .card-btn.soft.session {
+  background: color-mix(in srgb, var(--tone) 9%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 50%, transparent), 0 1px 0 rgba(0, 0, 0, 0.04);
+  color: color-mix(in srgb, var(--tone) 88%, var(--ink));
+}
+.card-btn.soft.deny:not(:disabled):hover,
+.card-btn.soft.once:not(:disabled):hover,
+.card-btn.soft.session:not(:disabled):hover {
+  background: color-mix(in srgb, var(--tone) 26%, var(--raise2));
+}
+[data-theme="light"] .card-btn.soft.deny:not(:disabled):hover,
+[data-theme="light"] .card-btn.soft.once:not(:disabled):hover,
+[data-theme="light"] .card-btn.soft.session:not(:disabled):hover {
+  background: color-mix(in srgb, var(--tone) 18%, var(--bg));
 }
 /* The one primary action of a card (Submit): the app's neutral primary, ink on page, as on the setup screen. Never
    the accent gradient, and not the gray of a selected chip. */
@@ -277,4 +345,66 @@
 .iv-count {
   font-size: 11.5px;
   color: var(--muted);
+}
+
+/* Under a main-chat answer: the threads the bot opened ("→ thread: <title>") and its "Send this to …?" card. They start
+   at the bubbles' text column like the other cards; a link line is plain text, the title underlined on hover. */
+.thread > .row-threadLink,
+.thread > .row-threadRoute {
+  padding-left: calc(28px + 10px);
+}
+/* consecutive link lines are one tight list: no paragraph gap between them (the 24px line height is the spacing) */
+.thread > .row-threadLink + .row-threadLink {
+  margin-top: -18px;
+}
+.row-assistant + .row-threadLink,
+.row-assistant + .row-threadRoute,
+.row-threadLink + .row-threadRoute,
+.row-threadRoute + .row-threadLink {
+  margin-top: -8px;
+}
+.th-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+}
+.th-link .line-ic {
+  color: var(--muted);
+}
+/* the title reads as a link the way the Slack/Discord link chips do (links.css .lk-t): a hairline underline at rest,
+   the full underline and ink on hover */
+.th-link-t {
+  color: var(--body);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+}
+.th-link:hover .th-link-t,
+.th-link:focus-visible .th-link-t {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+.th-route .th-route-q {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.th-route .th-route-l {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.th-route .th-route-text {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

@@ -100,7 +100,7 @@ test("a row opens its detail: when, what, where it delivers, last run, and the n
   await expect(d).toContainText('You can also change it by telling Kami in chat');
   // a job delivered to the bot's own chat says so
   await page.getByTestId("auto-row-a1f0c2d9e801").click();
-  await expect(d.getByTestId("auto-deliver")).toHaveText("Kami chat (omher)");
+  await expect(d.getByTestId("auto-deliver")).toHaveText("Kami chat (Awaken Church)");
   // primary action is the neutral ink fill, never the accent gradient
   const bg = await d.getByTestId("auto-run").evaluate((el) => getComputedStyle(el).backgroundImage);
   expect(bg).toBe("none");
@@ -181,7 +181,7 @@ test("New adds through cron.manage; Hermes' refusal shows as its own words", asy
   await expect(form).toHaveCount(0);
   await expect(page.getByTestId("auto-list").getByRole("listitem")).toHaveCount(7);
   await expect(page.getByTestId("auto-detail").getByRole("heading")).toHaveText("Standup notes");
-  await expect(page.getByTestId("auto-deliver")).toHaveText("Kami chat (omher)");
+  await expect(page.getByTestId("auto-deliver")).toHaveText("Kami chat (Awaken Church)");
   const adds = (await calls("automations.add")).map((c) => c.params);
   expect(adds[1]).toEqual({ bot: "kami", name: "Standup notes", schedule: "0 9 * * 1-5", prompt: "Collect yesterday's merged PRs into standup notes.", deliver: "bot-chat:kami" });
 });
@@ -194,7 +194,7 @@ test("an automation the bot made in chat leaves a card there: run, open, undo", 
   await expect(card).toContainText("CI watch on my PRs");
   await expect(card).toContainText("New automation");
   await expect(card).toContainText("every 15 min");
-  await expect(card).toContainText("Kami chat (omher)");
+  await expect(card).toContainText("Kami chat (Awaken Church)");
   await expect(page.getByTestId("nav-automations")).toContainText("7");
 
   await card.getByTestId("card-open-auto").click();
@@ -207,6 +207,23 @@ test("an automation the bot made in chat leaves a card there: run, open, undo", 
 });
 
 // ---- Plugins --------------------------------------------------------------------------------------------------
+
+test("Plugins: Details opens the card without installing and shows the whole description", async ({ page }) => {
+  await openPlugins(page);
+  await page.getByTestId("plug-tab-browse").click();
+  const card = page.getByTestId("plug-card-camofox");
+  await card.getByTestId("plug-details-camofox").click();
+  const sheet = page.getByTestId("install-sheet");
+  await expect(sheet).toBeVisible();
+  const description = sheet.locator(".pl-ds");
+  await expect(description).toContainText("self-hosted anti-detection Firefox as the browser backend.");
+  // the sheet wraps the description instead of clipping it to three lines
+  expect(await description.evaluate((el) => getComputedStyle(el).webkitLineClamp)).toBe("none");
+  expect(await description.evaluate((el) => getComputedStyle(el).overflow)).toBe("visible");
+  // opening Details is not installing
+  await expect(sheet.getByRole("button", { name: "Install" })).toBeVisible();
+  expect(await calls("plugins.manage")).toEqual([]);
+});
 
 test("Plugins: the bot's own, the catalog and the built-in ones in three tabs", async ({ page }) => {
   await openPlugins(page);
@@ -251,8 +268,11 @@ test("Install: inspect, see what it adds and for which bot, then install that pi
   const ink = await sheet.getByTestId("sheet-install").evaluate((el) => getComputedStyle(el).backgroundImage);
   expect(ink).toBe("none");
   await sheet.getByTestId("sheet-install").click();
-  await expect(sheet.getByTestId("sheet-done")).toContainText("babysit is installed and on.");
-  await expect(sheet.getByTestId("sheet-done")).toContainText("Its hooks load after Kami's gateway restarts.");
+  // the title says it is installed; the body starts with what is new, never the same words again
+  await expect(sheet.getByTestId("sheet-title")).toHaveText("babysit is installed");
+  await expect(sheet.getByTestId("sheet-done")).not.toContainText("installed");
+  // Hermes reloaded the bot's gateway itself: no restart is named (restarting one bot would not load it anyway)
+  await expect(sheet.getByTestId("sheet-done")).toContainText("Ready in Kami's next conversation.");
   const inspect = (await calls("plugins.inspect"))[0].params;
   const install = (await calls("plugins.install"))[0].params;
   expect(inspect).toEqual({ bot: "kami", catalog_name: "babysit" });
@@ -357,4 +377,29 @@ test("the language picker switches at once (ko, ja); both pages translate and sh
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("language").getByRole("radio", { name: "English" }).click();
   await expect(page.getByTestId("nav-settings")).toHaveText("Settings");
+});
+
+// ---- the back arrow ---------------------------------------------------------------------------------------------
+
+test("Automations, Plugins and Settings each have a back arrow top left that returns to the chat", async ({ page }) => {
+  await open(page);
+  for (const [nav, view] of [["nav-automations", "automations"], ["nav-plugins", "plugins"], ["nav-settings", "settings"]]) {
+    await page.getByTestId(nav).click();
+    await expect(page.getByTestId(view)).toBeVisible();
+    const head = page.getByTestId("header");
+    const back = head.getByTestId("page-back");
+    await expect(back).toHaveAttribute("aria-label", "Back");
+    // the arrow is the first thing in the header, left of the title
+    const b = (await back.boundingBox())!;
+    const title = (await head.locator(".head-title").boundingBox())!;
+    expect(b.x + b.width).toBeLessThanOrEqual(title.x);
+    expect(b.x - (await head.boundingBox())!.x).toBeLessThan(20);
+    await back.click();
+    await expect(page.getByTestId(view)).toHaveCount(0);
+    await expect(page.getByTestId("composer")).toBeVisible();
+  }
+  // Settings keeps its × too
+  await page.getByTestId("nav-settings").click();
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(page.getByTestId("composer")).toBeVisible();
 });

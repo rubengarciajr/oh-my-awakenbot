@@ -1,0 +1,549 @@
+{
+  "schema": "awaken_native_resource_measurement/v2",
+  "label": "signed-baseline-edc3d33c",
+  "method": {
+    "cpu": "sum of ps cumulative CPU-time deltas divided by monotonic elapsed seconds; one fully busy core = 100 percent",
+    "cpu_time_resolution_seconds": 0.01,
+    "rss": "mean and peak of summed resident KiB across endpoint and 0.5-second samples",
+    "duration_seconds_per_window": 5,
+    "coverage": "full identified native app cohort: app, local Python bridge and the three WebKit GPU/Networking/WebContent helpers independently attributed to the app by responsibility and matching coalition IDs; unrelated WebKit processes excluded",
+    "ui": "CUA red close hides; authorized open -a restores; AeroSpace read-only window inventory verifies visibility; no chat, settings, or gateway changes"
+  },
+  "expected_app_path": "/private/tmp/awaken-native-baseline-edc3d33c/Awaken Bot.app",
+  "app_pid": 98719,
+  "cohort_provenance": {
+    "api": "libSystem responsibility_get_pid_responsible_for_pid plus proc_pidinfo flavor 20; returned 40-byte coalition info; first two uint64 IDs",
+    "reference": "https://github.com/apple/darwin-xnu/blob/main/bsd/sys/proc_info.h",
+    "owner_and_bridge_pids": [
+      98719,
+      98739
+    ],
+    "webkit_pids": [
+      98734,
+      98735,
+      98736
+    ],
+    "owner_coalition_ids": [
+      371610,
+      371611
+    ],
+    "process_bindings": {
+      "98719": {
+        "responsible_pid": 98719,
+        "coalition_ids": [
+          371610,
+          371611
+        ]
+      },
+      "98734": {
+        "responsible_pid": 98719,
+        "coalition_ids": [
+          371610,
+          371611
+        ]
+      },
+      "98735": {
+        "responsible_pid": 98719,
+        "coalition_ids": [
+          371610,
+          371611
+        ]
+      },
+      "98736": {
+        "responsible_pid": 98719,
+        "coalition_ids": [
+          371610,
+          371611
+        ]
+      },
+      "98739": {
+        "responsible_pid": 98719,
+        "coalition_ids": [
+          371610,
+          371611
+        ]
+      }
+    },
+    "baseline_correlation_file": "/tmp/awaken-webkit-baseline-correlation.json",
+    "validation": "all five process identities, ownership, responsibility and coalition IDs checked every sample; app descendant and attributed WebKit PID sets must remain unchanged; fail on churn",
+    "other_webkit_process_count_at_init": 7
+  },
+  "processes": [
+    {
+      "pid": 98719,
+      "ppid": 1,
+      "pgid": 98719,
+      "cpu_seconds": 1.83,
+      "rss_kib": 84496,
+      "name": "awaken-bot",
+      "started": "Wed Nov 11 14:52:01 2026"
+    },
+    {
+      "pid": 98734,
+      "ppid": 1,
+      "pgid": 98734,
+      "cpu_seconds": 21.55,
+      "rss_kib": 30624,
+      "name": "com.apple.WebKit.GPU",
+      "started": "Wed Nov 11 14:52:02 2026"
+    },
+    {
+      "pid": 98735,
+      "ppid": 1,
+      "pgid": 98735,
+      "cpu_seconds": 0.11,
+      "rss_kib": 10176,
+      "name": "com.apple.WebKit.Networking",
+      "started": "Wed Nov 11 14:52:02 2026"
+    },
+    {
+      "pid": 98736,
+      "ppid": 1,
+      "pgid": 98736,
+      "cpu_seconds": 5.35,
+      "rss_kib": 115248,
+      "name": "com.apple.WebKit.WebContent",
+      "started": "Wed Nov 11 14:52:02 2026"
+    },
+    {
+      "pid": 98739,
+      "ppid": 98719,
+      "pgid": 98719,
+      "cpu_seconds": 0.48,
+      "rss_kib": 31232,
+      "name": "python3",
+      "started": "Wed Nov 11 14:52:02 2026"
+    }
+  ],
+  "initial_window_ids": [
+    16138
+  ],
+  "windows": [
+    {
+      "state": "visible",
+      "pair": 1,
+      "elapsed_seconds": 5.095010917,
+      "cpu_seconds": 4.210000000000001,
+      "rss_mean_kib": 239438.4,
+      "rss_peak_kib": 239712,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [
+        16138
+      ],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:53:44.035191+00:00",
+      "observed_utc_end": "2026-11-11T20:53:49.132552+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.20000000000000018,
+        "98734": 3.469999999999999,
+        "98735": 0.0,
+        "98736": 0.5399999999999991,
+        "98739": 0.0
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 1,
+      "elapsed_seconds": 5.074917500000001,
+      "cpu_seconds": 0.020000000000003126,
+      "rss_mean_kib": 204819.2,
+      "rss_peak_kib": 227472,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:53:53.532767+00:00",
+      "observed_utc_end": "2026-11-11T20:53:58.607276+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.020000000000000018,
+        "98734": 0.0,
+        "98735": 0.0,
+        "98736": 0.0,
+        "98739": 0.0
+      }
+    },
+    {
+      "state": "visible",
+      "pair": 2,
+      "elapsed_seconds": 5.197880833500001,
+      "cpu_seconds": 4.8700000000000045,
+      "rss_mean_kib": 233360,
+      "rss_peak_kib": 241632,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [
+        16138
+      ],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:54:07.908615+00:00",
+      "observed_utc_end": "2026-11-11T20:54:13.040896+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.19999999999999973,
+        "98734": 4.109999999999999,
+        "98735": 0.0,
+        "98736": 0.5600000000000005,
+        "98739": 0.0
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 2,
+      "elapsed_seconds": 5.1171410625,
+      "cpu_seconds": 0.029999999999986926,
+      "rss_mean_kib": 216201.6,
+      "rss_peak_kib": 220752,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:54:20.707154+00:00",
+      "observed_utc_end": "2026-11-11T20:54:25.797557+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.020000000000000462,
+        "98734": 0.00999999999999801,
+        "98735": 0.0,
+        "98736": 0.0,
+        "98739": 0.0
+      }
+    },
+    {
+      "state": "visible",
+      "pair": 3,
+      "elapsed_seconds": 5.1562564375,
+      "cpu_seconds": 4.170000000000002,
+      "rss_mean_kib": 236265.6,
+      "rss_peak_kib": 237440,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [
+        16138
+      ],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:54:35.370685+00:00",
+      "observed_utc_end": "2026-11-11T20:54:40.524639+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.1899999999999995,
+        "98734": 3.440000000000005,
+        "98735": 0.0,
+        "98736": 0.5199999999999996,
+        "98739": 0.020000000000000018
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 3,
+      "elapsed_seconds": 5.0780090625000005,
+      "cpu_seconds": 0.030000000000001137,
+      "rss_mean_kib": 226576,
+      "rss_peak_kib": 227040,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:54:45.206138+00:00",
+      "observed_utc_end": "2026-11-11T20:54:50.286493+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.019999999999999574,
+        "98734": 0.0,
+        "98735": 0.0,
+        "98736": 0.009999999999999787,
+        "98739": 0.0
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "state": "visible",
+      "pair": 1,
+      "started_utc": "2026-11-11T20:52:48.572970+00:00",
+      "status": "excluded_pilot",
+      "ended_utc": "2026-11-11T20:52:53.799759+00:00",
+      "excluded_reason": "Collected before confirmation that a concurrent read-only model/session metadata guard had completed; conservatively excluded to avoid overlap with that probe period.",
+      "snapshot_count": 9
+    },
+    {
+      "state": "hidden",
+      "pair": 1,
+      "started_utc": "2026-11-11T20:52:58.979018+00:00",
+      "status": "refused",
+      "reason": "App descendant cohort changed; sample refused",
+      "ended_utc": "2026-11-11T20:53:04.003552+00:00",
+      "partial_elapsed_seconds": 4.937452229,
+      "partial_cpu_seconds": 0.10000000000000142,
+      "snapshot_count": 9
+    },
+    {
+      "state": "hidden",
+      "pair": 1,
+      "started_utc": "2026-11-11T20:53:08.878152+00:00",
+      "status": "excluded_pilot",
+      "ended_utc": "2026-11-11T20:53:14.134560+00:00",
+      "excluded_reason": "Collected before confirmation that a concurrent read-only model/session metadata guard had completed; conservatively excluded to avoid overlap with that probe period.",
+      "snapshot_count": 10
+    },
+    {
+      "state": "visible",
+      "pair": 1,
+      "started_utc": "2026-11-11T20:53:43.967093+00:00",
+      "status": "accepted",
+      "ended_utc": "2026-11-11T20:53:49.155450+00:00",
+      "snapshot_count": 10
+    },
+    {
+      "state": "hidden",
+      "pair": 1,
+      "started_utc": "2026-11-11T20:53:53.476678+00:00",
+      "status": "accepted",
+      "ended_utc": "2026-11-11T20:53:58.626199+00:00",
+      "snapshot_count": 10
+    },
+    {
+      "state": "visible",
+      "pair": 2,
+      "started_utc": "2026-11-11T20:54:07.693899+00:00",
+      "status": "accepted",
+      "ended_utc": "2026-11-11T20:54:13.061281+00:00",
+      "snapshot_count": 10
+    },
+    {
+      "state": "hidden",
+      "pair": 2,
+      "started_utc": "2026-11-11T20:54:20.594065+00:00",
+      "status": "accepted",
+      "ended_utc": "2026-11-11T20:54:25.816000+00:00",
+      "snapshot_count": 10
+    },
+    {
+      "state": "visible",
+      "pair": 3,
+      "started_utc": "2026-11-11T20:54:35.310799+00:00",
+      "status": "accepted",
+      "ended_utc": "2026-11-11T20:54:40.542510+00:00",
+      "snapshot_count": 10
+    },
+    {
+      "state": "hidden",
+      "pair": 3,
+      "started_utc": "2026-11-11T20:54:45.152427+00:00",
+      "status": "accepted",
+      "ended_utc": "2026-11-11T20:54:50.355256+00:00",
+      "snapshot_count": 10
+    }
+  ],
+  "refused_intervals": [
+    {
+      "state": "hidden",
+      "pair": 1,
+      "started_utc": "2026-11-11T20:52:58.979018+00:00",
+      "status": "refused",
+      "reason": "App descendant cohort changed; sample refused",
+      "ended_utc": "2026-11-11T20:53:04.003552+00:00",
+      "partial_elapsed_seconds": 4.937452229,
+      "partial_cpu_seconds": 0.10000000000000142
+    }
+  ],
+  "excluded_pilot_windows": [
+    {
+      "state": "visible",
+      "pair": 1,
+      "elapsed_seconds": 5.0590093954999995,
+      "cpu_seconds": 4.270000000000003,
+      "rss_mean_kib": 271731.55555555556,
+      "rss_peak_kib": 271936,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [
+        16138
+      ],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:52:48.637184+00:00",
+      "observed_utc_end": "2026-11-11T20:52:53.702221+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.22999999999999998,
+        "98734": 3.3400000000000034,
+        "98735": 0.0,
+        "98736": 0.7000000000000002,
+        "98739": 0.0
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 1,
+      "elapsed_seconds": 5.128726437499999,
+      "cpu_seconds": 0.02999999999999403,
+      "rss_mean_kib": 210409.6,
+      "rss_peak_kib": 210560,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "observed_utc_start": "2026-11-11T20:53:08.964194+00:00",
+      "observed_utc_end": "2026-11-11T20:53:14.101771+00:00",
+      "per_process_cpu_seconds": {
+        "98719": 0.020000000000000018,
+        "98734": 0.00999999999999801,
+        "98735": 0.0,
+        "98736": 0.0,
+        "98739": 0.0
+      }
+    }
+  ],
+  "excluded_pilot_reason": "Collected before confirmation that a concurrent read-only model/session metadata guard had completed; conservatively excluded to avoid overlap with that probe period.",
+  "model_metadata_guard": {
+    "passed": true,
+    "same_existing_conversations": true,
+    "default_model": "mimo-v2.6-pro",
+    "provider": "xiaomi",
+    "reasoning_effort": "medium",
+    "source": "/tmp/awaken-baseline-full-session-metadata.json",
+    "old_ui_model_label_absent": true,
+    "writes_performed": false
+  },
+  "final_window_ids": [
+    16138
+  ],
+  "same_window_restored": true,
+  "same_app_pid_alive": true,
+  "final_cohort_validation_unrelated_webkit_count": 7,
+  "before_code_comparison_available": true,
+  "summary": {
+    "visible": {
+      "window_count": 3,
+      "elapsed_seconds": 15.449148188,
+      "cpu_seconds": 13.250000000000007,
+      "rss_mean_kib": 236354.66666666666,
+      "rss_peak_kib": 241632
+    },
+    "hidden": {
+      "window_count": 3,
+      "elapsed_seconds": 15.270067625000003,
+      "cpu_seconds": 0.07999999999999119,
+      "rss_mean_kib": 215865.6,
+      "rss_peak_kib": 227472
+    }
+  },
+  "source_commit": "edc3d33cfc46abc36c4bd1e5b7296c3f0b54cfd6",
+  "baseline_strict_signature_before_exit_code": 0,
+  "baseline_strict_signature_after_exit_code": 0,
+  "active_work_checks": {
+    "before": {
+      "answered": true,
+      "active_agents": 0,
+      "active_units": 0
+    },
+    "after_baseline": {
+      "answered": true,
+      "active_agents": 0,
+      "active_units": 0
+    },
+    "after_restoration": {
+      "answered": true,
+      "active_agents": 0,
+      "active_units": 0
+    }
+  },
+  "ui_observation": {
+    "same_baseline_pid_and_window_in_all_accepted_intervals": true,
+    "same_chat_and_empty_draft_after_all_restores": true,
+    "old_ui_model_label_not_exposed": true,
+    "model_verified_via_read_only_backend_metadata": true
+  },
+  "restoration": {
+    "installed_app_pid": 2329,
+    "installed_executable_path": "/Applications/Awaken Bot.app/Contents/MacOS/awaken-bot",
+    "installed_source_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+    "installed_executable_sha256": "01f1d0a792823e2c69fbc3272fe739568a5c652c3ef5f00ce0990aafc52e66e0",
+    "matched_pristine_current_updater_archive": "build-artifacts/0.1.0/desktop-0acf4223/awaken-bot-0.1.0-macos-arm64.app.tar.gz",
+    "baseline_app_pid_98719_exited": true,
+    "installed_codesign_deep_strict_exit_code": 0,
+    "installed_bridge_pycache_exists": false,
+    "current_chat_and_empty_draft_preserved": true,
+    "current_mimo_v2_6_pro_label_observed": true,
+    "current_window_visible": true,
+    "completion_summary_sent": true
+  },
+  "comparison": {
+    "execution_order": [
+      "post-change",
+      "pre-change signed baseline"
+    ],
+    "pre_source_commit": "edc3d33cfc46abc36c4bd1e5b7296c3f0b54cfd6",
+    "post_source_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+    "same_saved_conversation": true,
+    "ui_workload_difference": "newer build renders recent-first conversation DOM; older build renders full-history DOM",
+    "native_causal_improvement_claimed": false,
+    "hidden_cpu_improvement_demonstrated": false,
+    "scope": "accepted stable app+bridge+3 attributed WebKit cohort intervals; transient child helper work is excluded whenever an interval is refused",
+    "limitations": [
+      "Build order was not randomized; post-change was measured before signed older baseline.",
+      "The newer app process was warm; the older baseline was a fresh process.",
+      "Pre-change samples persist raw UTC/monotonic snapshots; earlier post-change intervals did not persist raw timestamps.",
+      "Two preliminary baseline windows were conservatively excluded to avoid concurrent read-only metadata probe overlap."
+    ],
+    "observed_before_summary": {
+      "visible": {
+        "window_count": 3,
+        "elapsed_seconds": 15.449148188,
+        "cpu_seconds": 13.250000000000007,
+        "rss_mean_kib": 236354.66666666666,
+        "rss_peak_kib": 241632
+      },
+      "hidden": {
+        "window_count": 3,
+        "elapsed_seconds": 15.270067625000003,
+        "cpu_seconds": 0.07999999999999119,
+        "rss_mean_kib": 215865.6,
+        "rss_peak_kib": 227472
+      }
+    },
+    "observed_after_summary": {
+      "visible": {
+        "window_count": 3,
+        "elapsed_seconds": 15.314711376,
+        "cpu_seconds": 11.41000000000031,
+        "rss_mean_kib": 207851.73333333334,
+        "rss_peak_kib": 244656
+      },
+      "hidden": {
+        "window_count": 3,
+        "elapsed_seconds": 15.239578042,
+        "cpu_seconds": 0.09000000000014552,
+        "rss_mean_kib": 228814.4,
+        "rss_peak_kib": 239392
+      }
+    }
+  },
+  "raw_snapshot_log": "native-cpu-full-before.samples.jsonl",
+  "evidence_export": {
+    "original_receipt_sha256": "99b684411c7c67850066acac8d2151f58c7fbad4c4e6487f38fb180ac1da7049",
+    "all_attempts_and_observations_retained": true,
+    "omitted_derived_field": "cpu_percent_of_one_core",
+    "cpu_units": "CPU-seconds and elapsed wall-seconds are retained; one-core utilization is their ratio",
+    "snapshot_serialization": "raw snapshots moved to indexed JSONL without changing values"
+  }
+}

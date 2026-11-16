@@ -7,13 +7,16 @@ async function open(page: Page) {
   await expect(page.getByTestId("bubble-user").first()).toBeVisible();
 }
 
-test("an offline bot shows why instead of Loading… forever", async ({ page }) => {
+test("a permanent gateway refusal shows the actual reason and never retries", async ({ page }) => {
+  await page.clock.install();
+  let opens = 0;
   await page.routeWebSocket(/127\.0\.0\.1/, (ws) => {
     const server = ws.connectToServer();
     ws.onMessage((raw) => {
       const msg = JSON.parse(String(raw));
       if (msg.op === "chat.open" && msg.bot === "friren") {
-        ws.send(JSON.stringify({ id: msg.id, ok: false, error: { code: "bot_offline", message: "gateway could not start" } }));
+        opens++;
+        ws.send(JSON.stringify({ id: msg.id, ok: false, error: { code: "gateway_unavailable", message: "Hermes gateway is unavailable (authorization): Action required." } }));
         return;
       }
       server.send(raw);
@@ -23,8 +26,13 @@ test("an offline bot shows why instead of Loading… forever", async ({ page }) 
   await page.getByTestId("bot-friren").click();
   const err = page.getByTestId("chat-error");
   await expect(err).toBeVisible();
-  await expect(err).toContainText("gateway could not start");
+  await expect(err).toContainText("Hermes gateway is unavailable (authorization): Action required.");
   await expect(page.getByTestId("timeline").getByText("Loading…")).toHaveCount(0);
+  await expect(page.getByTestId("chat-reconnecting")).toHaveCount(0);
+  const before = opens;
+  await page.clock.fastForward(120000);
+  await expect(err).toBeVisible();
+  expect(opens).toBe(before);
 });
 
 test("an away session with a blank label still gets a title", async ({ page }) => {
@@ -47,6 +55,8 @@ test("an away session with a blank label still gets a title", async ({ page }) =
     });
   });
   await open(page);
+  // The chat opens before its background elsewhere metadata arrives.
+  await expect.poll(() => page.getByTestId("away-text").allTextContents()).toContain("Slack session");
   const titles = await page.getByTestId("away-text").allTextContents();
   expect(titles.length).toBeGreaterThan(0);
   for (const t of titles) expect(t.trim()).not.toBe("");

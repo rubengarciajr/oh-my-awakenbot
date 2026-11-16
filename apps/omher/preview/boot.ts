@@ -4,6 +4,16 @@
 import { FakeSocket } from "./host";
 
 const w = window as unknown as Record<string, unknown>;
+// The preview speaks the site's language: the one picked on omher.app (?lang= or its switch), else English, the
+// site's own default; never the browser's, which the app would take on a first run.
+export const siteLang = (): string => {
+  try {
+    const l = (window.parent !== window ? parent.document.documentElement.lang : "").slice(0, 2);
+    return ["en", "ko", "ja", "zh"].includes(l) ? l : "en";
+  } catch {
+    return "en";
+  }
+};
 // The app keeps its look, pins and recent folders in localStorage; the preview keeps them for this tab only.
 try {
   const ss = window.sessionStorage;
@@ -11,6 +21,9 @@ try {
   if (!ss.getItem("omher.theme")) ss.setItem("omher.theme", "dark");
   ss.setItem("omher.notify", "off");
   ss.setItem("omher.sounds", "off");
+  ss.setItem("omher.lang", siteLang());
+  // From 0.2.10 the sidebar lists only the roster (one bot on a first run); the story plays on all four.
+  if (!ss.getItem("omher.roster")) ss.setItem("omher.roster", JSON.stringify(["kami", "friren", "juno-bot", "pip"]));
 } catch {
   /* storage blocked: the app falls back to its defaults */
 }
@@ -20,8 +33,12 @@ try {
 } catch {
   /* read-only in this browser */
 }
-// The SESSIONS mock host lists these as installed (official marks in the + menu).
-w.__omherMockAgents = ["claude", "codex", "omo", "dsh", "pi", "omp"];
+// Stage three installed agents (the chats the story uses, plus oh-my-hermes), keeping More agents and Continue a
+// conversation visible when the + menu first opens in the hero-sized window. The other agents, including the six
+// added in 0.2.8, show their full install lines under More agents; copying is text only and installs nothing. Chat
+// agents answer their first message with the preview note; oh-my-hermes opens a staged folder chat of the current
+// bot (host.ts folder.open; the story answers it). A session in the agent's own terminal is held back (guard.ts).
+w.__omherMockAgents = ["claude", "codex", "omh"];
 // Every BridgeClient the app makes (the store's and the add-bot popover's) talks to the in-page host.
 w.WebSocket = FakeSocket;
 document.documentElement.dataset.preview = "1";

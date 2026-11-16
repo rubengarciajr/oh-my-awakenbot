@@ -5,6 +5,8 @@ import { getSessions } from "./sessions/sessions";
 import { bootResume } from "./app/resumeBoot";
 import { resolveTheme } from "./app/theme";
 import { readTheme } from "./state/store";
+import { LaunchScreen } from "./app/LaunchScreen";
+import { WindowChrome } from "./app/WindowChrome";
 
 // The gate (first run, connecting, retry) is drawn before <App> mounts and sets the theme: give it the person's
 // theme too, or a light-theme user's first screen is dark.
@@ -16,7 +18,11 @@ void getSessions().reset();
 // continue by themselves start once that reset is done.
 bootResume();
 createRoot(document.getElementById("root")!).render(
-  <BridgeGate>
-    <App />
-  </BridgeGate>,
+  <WindowChrome>
+    <LaunchScreen>
+      <BridgeGate>
+        <App />
+      </BridgeGate>
+    </LaunchScreen>
+  </WindowChrome>,
 );

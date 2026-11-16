@@ -1,0 +1,14 @@
+{
+  "schema": "awaken_live_history/v1",
+  "native_page_rows": 54,
+  "native_page_bytes": 123307,
+  "latest_page_seconds": 2.2,
+  "has_older": true,
+  "older_page_rows": 56,
+  "older_page_seconds": 3.924,
+  "older_page_reset": false,
+  "full_resume_bytes": 3190112,
+  "full_resume_rows": 655,
+  "full_resume_seconds": 9.671,
+  "model_preserved_after_reads": true
+}

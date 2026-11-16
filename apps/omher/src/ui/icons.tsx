@@ -22,6 +22,10 @@ export const ChevronDown = ({ size = 9 }: { size?: number }) => (
 export const ChevronRight = ({ size = 10 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" {...s} strokeWidth="2.6"><path d="m9 6 6 6-6 6" /></svg>
 );
+/** A page's back arrow (top left of Settings, Automations and Plugins). */
+export const ArrowLeft = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" {...s} strokeWidth="2.2" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6" /></svg>
+);
 export const ArrowUp = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" {...s} strokeWidth="2.6"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
 );
@@ -38,6 +42,10 @@ export const TerminalIcon = ({ size = 14 }: { size?: number }) => (
 /** A speech bubble: back to the chat from the terminal view. */
 export const ChatIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" {...s} strokeWidth="1.9" aria-hidden="true"><path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z" /></svg>
+);
+/** A window with a column on its right: the header's button for the right-hand panel. */
+export const PanelIcon = ({ size = 15 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" {...s} strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5" /><path d="M14.5 4.5v15" /></svg>
 );
 /** Two corners pulling apart: open something at full size (the plan's full view). */
 export const ExpandIcon = ({ size = 14 }: { size?: number }) => (

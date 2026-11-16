@@ -261,3 +261,11 @@
   flex: none;
   width: 200px;
 }
+
+.mp-confirmation { margin: 8px 4px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r); color: var(--body); font-size: 12px; }
+.mp-confirmation strong { font-weight: 600; color: var(--ink); }
+.mp-confirmation p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mp-confirmation > div { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.mp-confirmation button { padding: 6px 8px; border-radius: var(--r-sm); color: var(--body); background: var(--raise2); }
+.mp-confirmation .mp-confirm-yes { background: var(--g-accent); color: var(--on-accent); }
+.mp-confirmation button:disabled { opacity: .6; }

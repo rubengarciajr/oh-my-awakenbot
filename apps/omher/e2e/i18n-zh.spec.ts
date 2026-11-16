@@ -35,7 +35,7 @@ async function openZh(page: Page) {
 async function englishLeft(page: Page, root: string): Promise<string[]> {
   return page.evaluate((sel) => {
     const KEEP =
-      /^(omher|OMH|Hermes|Kami|Friren|Frieren|Hermes Bot|OMH TUI|English|한국어|日本語|中文|Claude( Code)?|Codex|OmO|DSH|pi|omp|oh-my-pi|oh-my-hermes|Grok|Gemini( CLI)?|OpenAI|ChatGPT|CLIProxyAPI|Slack|Discord|Telegram|Cron|GitHub|API|ID|PR|CI|Esc|Ctrl\+?.*|⌘.*|Max \d+x|Pro|Plus|Graphite|Ocean|Forest|Sunset|Rose)$/;
+      /^(Awaken Church|AWAKEN BOT|omher|OMH|Hermes|Kami|Friren|Frieren|Hermes Bot|OMH TUI|English|한국어|日本語|中文|Claude( Code)?|Codex|OmO|DSH|pi|omp|oh-my-pi|oh-my-hermes|Grok|Gemini( CLI)?|OpenAI|ChatGPT|CLIProxyAPI|Slack|Discord|Telegram|Cron|GitHub|API|ID|PR|CI|Esc|Ctrl\+?.*|⌘.*|Max \d+x|Pro|Plus|Graphite|Ocean|Forest|Sunset|Rose)$/;
     // commands (`hermes auth add …`, `npm i -g …`), paths, ids and model or provider names stay as written
     const isData = (s: string) =>
       /[@/\\:]|^\d|^[a-z0-9._-]+$|^v?\d+(\.\d+)+/.test(s) ||
@@ -93,7 +93,8 @@ test("<html lang> follows the language, zh is zh-CN, and the CJK fonts are in --
 });
 
 for (const width of [1280, 900]) {
-  test(`sidebar, composer and the New session menu read in Chinese at ${width}px`, async ({ page }) => {
+  // SESSIONS hidden in favour of bot threads (plan 2026-11-15)
+  test.skip(`sidebar, composer and the New session menu read in Chinese at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 820 });
     await openZh(page);
     await expect(page.getByTestId("side-bots").locator(".side-sh")).toHaveText("机器人");
@@ -162,17 +163,16 @@ test("a first run takes the language from the system; an install that already ra
   const fresh = await browser.newContext({ locale: "zh-CN", colorScheme: "dark", storageState: { cookies: [], origins: [] } });
   const p1 = await fresh.newPage();
   await p1.goto("/");
-  await expect(p1.getByTestId("bot-kami")).toBeVisible();
+  // a fresh install lists the default bot alone
+  await expect(p1.getByTestId("bot-default")).toBeVisible();
   expect(await p1.evaluate(() => document.documentElement.lang)).toBe("zh-CN");
   await expect(p1.getByTestId("nav-settings")).toContainText("设置");
   expect(await p1.evaluate(() => localStorage.getItem("omher.lang"))).toBe("zh");
-  // the first-run card shows the Language row and switches on the spot
+  // there is no first-run panel: the language stays as picked, changed in Settings
   await mock("mock.clearHistory", { bot: "kami" });
   await p1.reload();
-  await expect(p1.getByTestId("onb-lang")).toBeVisible();
-  await expect(p1.getByTestId("onb-language").getByRole("radio", { name: "中文" })).toHaveAttribute("aria-checked", "true");
-  await p1.getByTestId("onb-language").getByRole("radio", { name: "English" }).click();
-  await expect(p1.getByTestId("nav-settings")).toContainText("Settings");
+  await expect(p1.getByTestId("nav-settings")).toContainText("设置");
+  await expect(p1.getByTestId("onb-lang")).toHaveCount(0);
   await fresh.close();
 
   // onboarded before this version and never chose: English, whatever the system says

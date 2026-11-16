@@ -42,10 +42,21 @@ the stdio entry's in a closed set of places. `Adapter` translates those, after
 * `config.set model` (a `/model` switch of this session) is the owner's
   revision-fenced `session.mutate model`, read and sent as Ink's
   `canonicalSessionControls.ts` does, and answered in the stdio entry's
-  shape: the model, `deferred` while a turn runs, or `confirm_required` and
+  shape: the model (and the provider the owner committed), `deferred` while a turn runs, or `confirm_required` and
   Hermes' message for a guarded target; the owner's one-time token for that
   target is kept and rides the same switch sent again with
   `confirm_expensive_model`. Every other `config.set` passes.
+* `session.title` with a title (the session picker's rename) and
+  `session.delete` (its delete) are the owner's revision-fenced
+  `session.mutate rename` (`{title}`, at the revision only: a metadata edit
+  carries no generation fence) and `session.mutate delete` (at the revision
+  and the generation), read first by a `session.resume` as Ink's
+  `mutateCanonical` reads them, and answered in the stdio entry's shapes
+  (`{title}`, `{deleted}`). That read attaches this connection to the
+  session; unless this connection already viewed it, the attachment is
+  handed back with a plain `session.detach` once the edit is answered (a
+  deleted session excepted), as Ink's `useSessionDelete.ts` hands back a
+  refused delete's.
 * `session.steer` and `session.redirect` get the execution generation of the turn they steer,
   `shell.exec` the session it runs in, and `session.list` is the owner's live
   listing followed by its stored one.
@@ -97,6 +108,8 @@ import sys
 import threading
 from typing import Any
 import uuid
+
+_PICKER_SOURCE_LIMIT = 200
 
 TO_CLIENT = "client"
 TO_OWNER = "owner"
@@ -189,6 +202,57 @@ DRAIN_SECONDS = 1.5
 def _whole(value: object) -> bool:
     """An int that is not a bool, as a JSON integer arrives."""
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+# What names the same conversation across the owner's live and stored answers: the id the row is listed under, the
+# id it resolves to, and the root of the lineage it belongs to (a compressed session is listed by its tip).
+CONVERSATION_IDS = ("id", "resolved_id", "_lineage_root_id")
+
+# What one listing row's latest activity is, in the order the answers name it: an owner that fills its picker
+# answers `activity_at`, and a live row is timed by when it started.
+ACTIVITY_FIELDS = ("activity_at", "last_active_at", "last_active", "started_at")
+
+
+def _activity_at(row: dict[str, Any]) -> float:
+    """The row's latest activity in seconds (one given in milliseconds is scaled down); 0 when it names none."""
+    for name in ACTIVITY_FIELDS:
+        value = row.get(name)
+        if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+            number = float(value)
+            return number / 1000 if number > 1e11 else number
+    return 0.0
+
+
+def _same_conversations(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per conversation: rows sharing an id, a resolved id or a lineage root are merged, newest activity
+    first. What only one of them carries is kept -- a stored row's title and preview, a live row's running state --
+    and a row either half calls not resumable stays that way, since that says who owns it."""
+    merged: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        names = [row[field] for field in CONVERSATION_IDS if isinstance(row.get(field), str) and row[field]]
+        found = next((by_id[name] for name in names if name in by_id), None)
+        if found is None:
+            found = dict(row)
+            merged.append(found)
+        else:
+            for field in ("title", "preview", "source", "workspace", "cwd", "model", "git_branch"):
+                if not found.get(field) and row.get(field):
+                    found[field] = row[field]
+            if isinstance(row.get("message_count"), int) and row["message_count"] > (found.get("message_count") or 0):
+                found["message_count"] = row["message_count"]
+            if row.get("running"):
+                found["running"] = True
+            if row.get("resumable") is False:
+                found["resumable"] = False
+            if row.get("owner_runtime") and not found.get("owner_runtime"):
+                found["owner_runtime"] = row["owner_runtime"]
+            if max(_activity_at(found), _activity_at(row)):
+                found["activity_at"] = max(_activity_at(found), _activity_at(row))
+        for name in names:
+            by_id[name] = found
+    merged.sort(key=_activity_at, reverse=True)
+    return merged
 
 
 def _truthy(value: str | None) -> bool:
@@ -520,6 +584,7 @@ class Adapter:
         self.files = files or HermesFiles()
         self.new_id = new_id
         self.contract: dict[str, Any] | None = None  # `runtime.describe`'s session_create, once answered
+        self.capabilities: frozenset[str] = frozenset()  # what `runtime.describe` says the owner's listing knows
         self.held: list[dict[str, Any]] = []  # session.create calls that wait for it
         self.sessions: dict[str, _Session] = {}
         self.current = ""  # the session the TUI last opened
@@ -538,6 +603,9 @@ class Adapter:
     def _on_described(self, frame: dict[str, Any]) -> list[Action]:
         result = frame.get("result")
         contract = result.get("session_create") if isinstance(result, dict) else None
+        capabilities = result.get("capabilities") if isinstance(result, dict) else None
+        self.capabilities = frozenset(name for name in capabilities if isinstance(name, str)) \
+            if isinstance(capabilities, list) else frozenset()
         if isinstance(contract, dict):
             self.contract = contract
         else:
@@ -568,6 +636,8 @@ class Adapter:
             "config.set": self._config_set,
             "shell.exec": self._shell,
             "session.list": self._list,
+            "session.title": self._rename,
+            "session.delete": self._delete,
             "image.attach": self._attach,
             "image.attach_bytes": self._attach_bytes,
             "image.detach": self._detach_image,
@@ -786,7 +856,8 @@ class Adapter:
                 return [_reply(request_id, {"key": "model", "value": "", "confirm_required": True,
                                             "confirm_message": str(result.get("confirm_message") or "")})]
             self._note_generation(session_id, result.get("execution_generation"))
-            return [_reply(request_id, {"key": "model", "value": result.get("model") or "", "scope": "session",
+            provider = {"provider": result["provider"]} if isinstance(result.get("provider"), str) and result["provider"] else {}
+            return [_reply(request_id, {"key": "model", "value": result.get("model") or "", **provider, "scope": "session",
                                         "deferred": result.get("status") == "deferred"})]
 
         return [self._call("session.resume", {"session_id": session_id}, on_read)]
@@ -797,29 +868,104 @@ class Adapter:
         return [self._forward(request_id, "shell.exec", params, translated=False)]
 
     def _list(self, request_id: object, params: dict[str, Any]) -> list[Action]:
-        """The owner's live sessions, then its stored ones, as one answer (Ink's resume picker reads both).
+        """The owner's live sessions and its stored ones, as one answer (Ink's resume picker reads both).
+
+        One conversation is one row: a session the owner holds open and the stored row it would resume are merged by
+        the ids that name the same lineage, the fields only one of them carries are kept, and the merged rows are
+        ordered by the latest activity of the conversation before the limit is applied -- so a listing never spends
+        its page on a row the other half of the same session already answered. `picker` asks the owner for the
+        previews its own picker draws, which a live row has not otherwise.
 
         A `title` lookup is one call: the owner answers it from its whole store, and refuses it with a scope.
         """
+        if "title" in params:
+            return [self._forward(request_id, "session.list", params, translated=False)]
         limit = params.get("limit")
+        asked = {**params, "limit": _PICKER_SOURCE_LIMIT}
+        if "session-list-picker-v1" in self.capabilities:
+            asked["picker"] = True
 
         def on_live(live: dict[str, Any]) -> list[Action]:
-            if not isinstance(live.get("result"), dict) or "title" in params:
+            if not isinstance(live.get("result"), dict):
                 return [(TO_CLIENT, {**live, "id": request_id})]
             rows = [row for row in live["result"].get("sessions") or [] if isinstance(row, dict)]
 
             def on_stored(stored: dict[str, Any]) -> list[Action]:
                 result = stored.get("result")
-                seen = {row.get("id") for row in rows}
                 for row in (result.get("sessions") or []) if isinstance(result, dict) else []:
-                    if isinstance(row, dict) and row.get("id") not in seen:
+                    if isinstance(row, dict):
                         rows.append(row)
-                kept = rows[:limit] if _whole(limit) and limit > 0 else rows
+                kept = _same_conversations(rows)
+                kept = kept[:limit] if _whole(limit) and limit > 0 else kept
                 return [_reply(request_id, {"sessions": kept})]
 
-            return [self._call("session.list", {**params, "scope": "stored"}, on_stored)]
+            return [self._call("session.list", {**asked, "scope": "stored"}, on_stored)]
 
-        return [self._call("session.list", params, on_live)]
+        return [self._call("session.list", asked, on_live)]
+
+    def _rename(self, request_id: object, params: dict[str, Any]) -> list[Action]:
+        """`session.title` with a title is the owner's `session.mutate rename`, at the revision a `session.resume`
+        reads and no generation (Ink's `mutateCanonical` sends a rename so), answered `{pending, title}` as the stdio
+        entry answers it. One without a title (a read) passes."""
+        if "title" not in params:
+            return [self._forward(request_id, "session.title", params, translated=False)]
+        title = params.get("title")
+
+        def answer(result: dict[str, Any]) -> dict[str, Any]:
+            return {"pending": False, "title": str(result.get("title") or title).strip()}
+
+        return self._metadata_edit(request_id, params.get("session_id"), "rename", {"title": title}, answer)
+
+    def _delete(self, request_id: object, params: dict[str, Any]) -> list[Action]:
+        """`session.delete` is the owner's `session.mutate delete` (the shared gateway has no `session.delete`), at
+        the revision and generation a `session.resume` reads, answered `{deleted: <id>}` as the stdio entry answers."""
+        session_id = params.get("session_id")
+        return self._metadata_edit(request_id, session_id, "delete", {}, lambda _result: {"deleted": session_id})
+
+    def _metadata_edit(self, request_id: object, session_id: object, operation: str, payload: dict[str, Any],
+                       answer: Callable[[dict[str, Any]], dict[str, Any]]) -> list[Action]:
+        """A rename or delete of a session the picker lists, which this connection may not view.
+
+        The `session.resume` that reads the revision (and, for a delete, the
+        generation) attaches this connection as a viewer. That attachment is
+        handed back with a plain `session.detach` (no end reason: one would
+        run the owner's viewer close) once the edit is answered, unless this
+        connection viewed the session already, as Ink's `useSessionDelete.ts`
+        hands back a refused delete's, or a resume opened it while the edit
+        waited (the owner reuses one subscription per viewer, so handing it
+        back would cut the opened session's events). A deleted session leaves
+        nothing to hand back, and a view of it here is forgotten.
+        """
+
+        def on_read(snapshot: dict[str, Any]) -> list[Action]:
+            result = snapshot.get("result")
+            if not isinstance(result, dict):
+                return [(TO_CLIENT, {**snapshot, "id": request_id})]
+            resolved = result.get("session_id") or session_id
+            subscription = result.get("subscription_id")
+            release = ({"session_id": resolved, "subscription_id": subscription}
+                       if isinstance(subscription, str) and subscription and resolved not in self.sessions else None)
+            mutate = {"session_id": session_id, "request_id": self.new_id(), "expected_revision": result.get("revision"),
+                      "operation": operation, "payload": payload}
+            if operation != "rename":  # a metadata edit carries no generation fence (`mutateCanonical`)
+                mutate["expected_generation"] = result.get("execution_generation")
+
+            def on_mutated(reply: dict[str, Any]) -> list[Action]:
+                done = reply.get("result")
+                said: Action = (_reply(request_id, answer(done)) if isinstance(done, dict)
+                                else (TO_CLIENT, {**reply, "id": request_id}))
+                if isinstance(done, dict) and operation == "delete":
+                    if isinstance(resolved, str):
+                        self.sessions.pop(resolved, None)
+                    return [said]
+                adopted = self.sessions.get(resolved) if isinstance(resolved, str) else None
+                if release is None or (adopted is not None and adopted.subscription_id == release["subscription_id"]):
+                    return [said]  # decided now, not at the read: a resume since adopted this subscription
+                return [self._call("session.detach", release, lambda _gone: []), said]
+
+            return [self._call("session.mutate", mutate, on_mutated)]
+
+        return [self._call("session.resume", {"session_id": session_id}, on_read)]
 
     # ── the commands the owner runs through a verb of its own ──
 

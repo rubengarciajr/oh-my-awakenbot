@@ -1,0 +1,69 @@
+{
+  "execution_order": [
+    "post-change",
+    "pre-change signed baseline"
+  ],
+  "pre_source_commit": "edc3d33cfc46abc36c4bd1e5b7296c3f0b54cfd6",
+  "post_source_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+  "same_saved_conversation": true,
+  "ui_workload_difference": "newer build renders recent-first conversation DOM; older build renders full-history DOM",
+  "native_causal_improvement_claimed": false,
+  "hidden_cpu_improvement_demonstrated": false,
+  "scope": "accepted stable app+bridge+3 attributed WebKit cohort intervals; transient child helper work is excluded whenever an interval is refused",
+  "limitations": [
+    "Build order was not randomized; post-change was measured before signed older baseline.",
+    "The newer app process was warm; the older baseline was a fresh process.",
+    "Pre-change samples persist raw UTC/monotonic snapshots; earlier post-change intervals did not persist raw timestamps.",
+    "Two preliminary baseline windows were conservatively excluded to avoid concurrent read-only metadata probe overlap."
+  ],
+  "observed_before_summary": {
+    "visible": {
+      "window_count": 3,
+      "elapsed_seconds": 15.449148188,
+      "cpu_seconds": 13.250000000000007,
+      "rss_mean_kib": 236354.66666666666,
+      "rss_peak_kib": 241632
+    },
+    "hidden": {
+      "window_count": 3,
+      "elapsed_seconds": 15.270067625000003,
+      "cpu_seconds": 0.07999999999999119,
+      "rss_mean_kib": 215865.6,
+      "rss_peak_kib": 227472
+    }
+  },
+  "observed_after_summary": {
+    "visible": {
+      "window_count": 3,
+      "elapsed_seconds": 15.314711376,
+      "cpu_seconds": 11.41000000000031,
+      "rss_mean_kib": 207851.73333333334,
+      "rss_peak_kib": 244656
+    },
+    "hidden": {
+      "window_count": 3,
+      "elapsed_seconds": 15.239578042,
+      "cpu_seconds": 0.09000000000014552,
+      "rss_mean_kib": 228814.4,
+      "rss_peak_kib": 239392
+    }
+  },
+  "restoration": {
+    "installed_app_pid": 2329,
+    "installed_executable_path": "/Applications/Awaken Bot.app/Contents/MacOS/awaken-bot",
+    "installed_source_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+    "installed_executable_sha256": "01f1d0a792823e2c69fbc3272fe739568a5c652c3ef5f00ce0990aafc52e66e0",
+    "matched_pristine_current_updater_archive": "build-artifacts/0.1.0/desktop-0acf4223/awaken-bot-0.1.0-macos-arm64.app.tar.gz",
+    "baseline_app_pid_98719_exited": true,
+    "installed_codesign_deep_strict_exit_code": 0,
+    "installed_bridge_pycache_exists": false,
+    "current_chat_and_empty_draft_preserved": true,
+    "current_mimo_v2_6_pro_label_observed": true,
+    "current_window_visible": true,
+    "completion_summary_sent": true
+  },
+  "evidence_export": {
+    "original_receipt_sha256": "4026c8220b2eda413e2e1688cf0b2120c29492f8e2316fc47d66abee888a10fe",
+    "omitted_derived_field": "cpu_percent_of_one_core"
+  }
+}

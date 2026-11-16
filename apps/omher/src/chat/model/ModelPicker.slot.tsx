@@ -1,6 +1,6 @@
 // Header right: the ONE control. `● <Model> | <Reasoning> ⌄` opens a popover with the providers' models
 // and a reasoning control. Changes go to `chat.set_model` for the bot's main chat; when the bridge refuses
-// (e.g. `unsupported`) the old value stays and a one-line note says to change it in Hermes.
+// the old value stays and its error is shown. Hermes selection guards are confirmed in this picker.
 // The list has a search field (focused on open; Up/Down/Enter pick, Esc closes) and one chip per vendor.
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./model.css";
@@ -16,13 +16,14 @@ import { composing } from "../../lib/ime";
 
 export const slot = "modelPicker";
 
-type Change = { model?: string; provider?: string; reasoning?: string };
+type Change = { model?: string; provider?: string; reasoning?: string; confirm?: string };
 
 export default function ModelPicker({ bot, chat }: SlotProps["modelPicker"]) {
   const s = useStore();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<{ change: Change; token: string; message: string } | null>(null);
   const opts = s.models[bot.name];
   const model = chat?.model || opts?.current.model || bot.model;
   const provider = chat?.provider || opts?.current.provider || bot.provider;
@@ -41,7 +42,12 @@ export default function ModelPicker({ bot, chat }: SlotProps["modelPicker"]) {
   useEffect(() => {
     setOpen(false);
     setNote(null);
+    setConfirmation(null);
   }, [bot.name]);
+  useEffect(() => {
+    setNote(null);
+    setConfirmation(null);
+  }, [model, provider, reasoning]);
   useEffect(() => {
     if (!open) return;
     setQuery("");
@@ -68,12 +74,17 @@ export default function ModelPicker({ bot, chat }: SlotProps["modelPicker"]) {
     setNote(null);
     // The store reports a failed request only through lastError: clear it, then look after the call.
     store.dispatch({ type: "error", message: null });
-    await s.setModel(change);
-    const after = store.getState();
-    const c = after.chats[bot.name];
-    const got: Change = { model: c?.model, provider: c?.provider, reasoning: c?.reasoning };
-    const applied = (Object.keys(change) as (keyof Change)[]).every((k) => got[k] === change[k]);
-    if (!applied && after.lastError !== null) setNote(after.lastError);
+    const result = await s.setModel(change);
+    if (result?.confirmation) {
+      setConfirmation({ change, ...result.confirmation });
+    } else {
+      setConfirmation(null);
+      if (result?.status === "deferred") setNote(t("mp.pending"));
+      else if (!result) {
+        const error = store.getState().lastError;
+        if (error) setNote(t("mp.failed", { error }));
+      }
+    }
     setBusy(false);
   };
 
@@ -226,7 +237,17 @@ export default function ModelPicker({ bot, chat }: SlotProps["modelPicker"]) {
           />
           {note !== null && (
             <div className="mp-note" role="status" title={note || undefined} data-testid="model-note">
-              {t("mp.inHermes")}
+              {note}
+            </div>
+          )}
+          {confirmation && (
+            <div className="mp-confirmation" role="alert" data-testid="model-confirmation">
+              <strong>{t("mp.confirmHint")}</strong>
+              <p>{confirmation.message}</p>
+              <div>
+                <button type="button" disabled={busy} data-testid="model-cancel" onClick={() => setConfirmation(null)}>{t("mp.cancel")}</button>
+                <button type="button" className="mp-confirm-yes" disabled={busy} data-testid="model-confirm" onClick={() => void apply({ ...confirmation.change, confirm: confirmation.token })}>{t("mp.confirm")}</button>
+              </div>
             </div>
           )}
           <div className="mp-f">

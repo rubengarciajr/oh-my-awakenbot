@@ -3,28 +3,7 @@
 // official mark; the OMH kami mark), imported as text and drawn inline so monochrome marks follow the text
 // colour (`currentColor`) on both themes. Unknown ids get a letter mark.
 import type { CSSProperties } from "react";
-import amp from "../assets/agents/amp-color.svg?raw";
-import claudecode from "../assets/agents/claudecode-color.svg?raw";
-import cline from "../assets/agents/cline.svg?raw";
-import codex from "../assets/agents/codex-color.svg?raw";
-import cursor from "../assets/agents/cursor.svg?raw";
-import gemini from "../assets/agents/gemini-color.svg?raw";
-import geminicli from "../assets/agents/geminicli-color.svg?raw";
-import githubcopilot from "../assets/agents/githubcopilot.svg?raw";
-import goose from "../assets/agents/goose.svg?raw";
-import grok from "../assets/agents/grok.svg?raw";
-import grokbot from "../assets/agents/grokbot.svg?raw";
-import junie from "../assets/agents/junie-color.svg?raw";
-import kilocode from "../assets/agents/kilocode.svg?raw";
-import omhPng from "../assets/agents/omh.png";
-import omp from "../assets/agents/omp.svg?raw";
-import openai from "../assets/agents/openai.svg?raw";
-import opencode from "../assets/agents/opencode.svg?raw";
-import pi from "../assets/agents/pi.svg?raw";
-import qwen from "../assets/agents/qwen-color.svg?raw";
-import roocode from "../assets/agents/roocode.svg?raw";
-import trae from "../assets/agents/trae-color.svg?raw";
-import windsurf from "../assets/agents/windsurf.svg?raw";
+import { assetRaw, assetUrl } from "../harness/assets";
 import { t } from "../i18n";
 
 export type AgentMark =
@@ -54,33 +33,35 @@ function parse(id: string, title: string, raw: string): AgentMark {
   };
 }
 
-const SVG: [string, string, string][] = [
-  ["claude", "Claude Code", claudecode],
-  ["codex", "Codex", codex],
-  ["openai", "OpenAI", openai],
-  ["gemini", "Gemini CLI", geminicli],
-  ["gemini-app", "Gemini", gemini],
-  ["grok", "Grok", grok],
-  ["grokbot", "Grok Bot", grokbot],
-  ["pi", "pi", pi],
-  ["omp", "omp", omp],
-  ["opencode", "opencode", opencode],
-  ["cursor", "Cursor", cursor],
-  ["amp", "Amp", amp],
-  ["cline", "Cline", cline],
-  ["copilot", "GitHub Copilot", githubcopilot],
-  ["goose", "Goose", goose],
-  ["kilo", "Kilo Code", kilocode],
-  ["junie", "Junie", junie],
-  ["qwen", "Qwen Code", qwen],
-  ["windsurf", "Windsurf", windsurf],
-  ["trae", "TRAE", trae],
-  ["roo", "Roo Code", roocode],
-];
+const SVG: [string, string, string][] = (
+  [
+  ["claude", "Claude Code", "claudecode-color.svg"],
+  ["codex", "Codex", "codex-color.svg"],
+  ["openai", "OpenAI", "openai.svg"],
+  ["gemini", "Gemini CLI", "geminicli-color.svg"],
+  ["gemini-app", "Gemini", "gemini-color.svg"],
+  ["grok", "Grok", "grok.svg"],
+  ["grokbot", "Grok Bot", "grokbot.svg"],
+  ["pi", "pi", "pi.svg"],
+  ["omp", "omp", "omp.svg"],
+  ["opencode", "opencode", "opencode.svg"],
+  ["cursor", "Cursor", "cursor.svg"],
+  ["amp", "Amp", "amp-color.svg"],
+  ["cline", "Cline", "cline.svg"],
+  ["copilot", "GitHub Copilot", "githubcopilot.svg"],
+  ["goose", "Goose", "goose.svg"],
+  ["kilo", "Kilo Code", "kilocode.svg"],
+  ["junie", "Junie", "junie-color.svg"],
+  ["qwen", "Qwen Code", "qwen-color.svg"],
+  ["windsurf", "Windsurf", "windsurf.svg"],
+  ["trae", "TRAE", "trae-color.svg"],
+  ["roo", "Roo Code", "roocode.svg"],
+  ] as [string, string, string][]
+).map(([id, title, file]) => [id, title, assetRaw(file) ?? ""]);
 
 const MARKS: Record<string, AgentMark> = Object.fromEntries([
   ...SVG.map(([id, title, raw]) => [id, parse(id, title, raw)] as const),
-  ["omh", { kind: "img", id: "omh", title: "OMH", src: omhPng } as AgentMark] as const,
+  ["omh", { kind: "img", id: "omh", title: "OMH", src: assetUrl("omh.png") ?? "" } as AgentMark] as const,
 ]);
 
 /** Every agent id with a mark, in the order the grid shows them (22). */
@@ -105,6 +86,26 @@ const ALIASES: Record<string, string> = {
   kami: "omh",
 };
 
+const byFile = new Map<string, AgentMark>();
+
+/** The mark in `file` (a name in src/assets/agents, no folder), titled `title`; a letter mark when there is no such
+ *  file. */
+export function fileMark(file: string, title: string): AgentMark {
+  const key = `${file}\u0000${title}`;
+  const hit = byFile.get(key);
+  if (hit) return hit;
+  const stem = file.replace(/\.[a-z]+$/i, "");
+  const raw = assetRaw(file);
+  const src = raw ? undefined : assetUrl(file);
+  const mark: AgentMark = raw
+    ? parse(stem, title, raw)
+    : src
+      ? { kind: "img", id: stem, title, src }
+      : { kind: "letter", id: null, title, letter: (title.match(/[a-z0-9]/i)?.[0] ?? "?").toUpperCase() };
+  byFile.set(key, mark);
+  return mark;
+}
+
 /** The mark for an agent id (case-insensitive, aliases allowed); unknown ids get a letter mark. */
 export function agentIcon(id: string | null | undefined): AgentMark {
   const key = (id ?? "").trim().toLowerCase();
@@ -116,16 +117,19 @@ export function agentIcon(id: string | null | undefined): AgentMark {
 
 export function AgentIcon({
   id,
+  file,
   size = 16,
   style,
   className,
 }: {
   id: string | null | undefined;
+  /** Draw the mark in this file of src/assets/agents instead ([`fileMark`], titled by `id`). */
+  file?: string;
   size?: number;
   style?: CSSProperties;
   className?: string;
 }) {
-  const mark = agentIcon(id);
+  const mark = file ? fileMark(file, id ?? "") : agentIcon(id);
   const cls = `agent-ic${className ? ` ${className}` : ""}`;
   if (mark.kind === "img") {
     return (

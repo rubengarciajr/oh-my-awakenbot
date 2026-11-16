@@ -1,29 +1,24 @@
 import "./chat.css";
-import { selectAsks, useStore } from "../state/store";
+import { chatReadRecoverable, selectAsks, useStore } from "../state/store";
 import { Header } from "./parts/Header";
 import { Timeline } from "./parts/Timeline";
 import { Composer } from "./parts/Composer";
-import { RunsFull } from "../runs/RunsTab";
+import { OmhPromptLine } from "../onboarding/OmhPromptLine";
+import { ConnectBlock } from "./connect/ConnectBlock";
 import { t } from "../i18n";
-import { FirstRun } from "../onboarding/FirstRun";
+import { ThreadChat } from "../threads/ThreadChat";
 
 /** The selected bot's one main chat: header, timeline, composer. */
 export function Chat() {
   const s = useStore();
   const bot = s.bots.find((b) => b.name === s.selectedBot) ?? null;
   if (!bot) {
-    // no bot at all: say what a bot is and how to get one, not only that none was found
+    // no bot at all: one line that says Hermes has none yet and where to connect one (the + menu), no command
     const none = s.conn === "open" && s.bots.length === 0;
     return (
       <div className="chat-empty" data-testid="chat-empty">
-        <FirstRun />
         {none ? (
-          <>
-            <b>{t("chat.noBots")}</b>
-            <span>
-              {t("chat.noBotsHint")} <code>hermes profile create &lt;name&gt;</code>
-            </span>
-          </>
+          <span>{t("chat.noBotsHint")}</span>
         ) : s.conn === "open" ? (
           t("chat.pick")
         ) : (
@@ -32,27 +27,32 @@ export function Chat() {
       </div>
     );
   }
+  // a thread of this bot (sidebar tree): the same parts, fed by the thread's chat
+  if (s.ui.thread) return <ThreadChat bot={bot} thread={s.ui.thread} />;
   const chat = s.chats[bot.name];
-  // first-run cards only over a chat with no conversation yet, never above its history
-  const blank = !!chat?.loaded && !chat.openError && chat.items.length === 0;
+  const starting = bot.status === "starting" || chat?.openErrorCode === "gateway_starting";
+  const recovering = chatReadRecoverable(chat?.openErrorCode);
   const asking = selectAsks(s).some((a) => a.bot === bot.name);
   // the bridge is away (it reconnects by itself): the composer says so and waits, like a bot that is offline
   const away = s.conn !== "open";
   return (
     <>
       <Header bot={bot} chat={chat} />
-      <div className={`pane${s.ui.runsFull ? " has-full" : ""}`} data-pane={bot.name}>
-        {blank && <FirstRun />}
+      <div className="pane" data-pane={bot.name}>
         <Timeline bot={bot} />
-        {s.ui.runsFull && <RunsFull bot={bot} />}
+        {/* Hermes says the bot cannot answer (no AI account): one quiet block above the composer, so a long chat
+            that loses its account still shows it without scrolling */}
+        <ConnectBlock bot={bot} />
+        <OmhPromptLine bot={bot} />
         <Composer
           key={bot.name}
           bot={bot}
           running={!!chat?.turn}
           asking={asking}
-          offline={bot.status === "offline" || away}
-          offlineText={away ? t("chat.connecting") : undefined}
+          offline={bot.status === "offline" || away || starting || recovering}
+          offlineText={starting ? t("row.starting") : away || recovering ? t("chat.connecting") : undefined}
           skills
+          plugins
           onSend={(text) => void s.send(text)}
           onSendFiles={(text, files) => s.sendWithFiles(text, files)}
           onStop={() => void s.interrupt()}

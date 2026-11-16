@@ -3,7 +3,7 @@
 // save a fresh snapshot a moment after anything it holds changes, when the page goes away, and right before an
 // update restarts omher. Nothing is saved until the boot has put the old snapshot back, so a slow start never
 // overwrites it with an empty one.
-import { getStore, type AppState } from "../state/store";
+import { getStore, heldDrafts, type AppState } from "../state/store";
 import { getSessions } from "../sessions/sessions";
 import { allDrafts, loadDrafts, onDraftChange } from "./drafts";
 import { buildResume, parseResume, RESUME_KEY, type ResumeSnap, type SavedMsg } from "./resume";
@@ -35,15 +35,17 @@ function snapshot(): ResumeSnap {
       session: st.ui.session,
       panelOpen: st.ui.panelOpen,
       panelTab: st.ui.panelTab,
-      runsFull: st.ui.runsFull,
+      runsFull: st.ui.panelMax, // the maximised panel (the key predates it)
       runId: st.ui.runId,
-      drafts: allDrafts(),
+      // a held message (steer queue) lives only in memory: it comes back in its chat's box, never lost
+      drafts: heldDrafts(st, allDrafts()),
       sessions: list.map((r) => ({
         id: r.id,
         agent: r.agent,
         cwd: r.cwd,
         startedAt: r.startedAt,
         view: r.view,
+        ...(r.open ? { open: r.open } : {}),
         // a paused one was running before the last restart and still waits for Resume
         running: r.status === "running" || r.status === "starting" || !!r.paused,
         ...(r.status === "draft" ? { draft: true } : {}),
@@ -57,6 +59,8 @@ function snapshot(): ResumeSnap {
         ...(r.title ? { title: r.title } : {}),
         ...(r.agentTitle ? { agentTitle: r.agentTitle } : {}),
         ...(r.promptTitle ? { promptTitle: r.promptTitle } : {}),
+        ...(r.mode ? { mode: r.mode } : {}),
+        ...(r.effort ? { effort: r.effort } : {}),
       })),
       messages: (id) => {
         const key = ss.chatKey(id);

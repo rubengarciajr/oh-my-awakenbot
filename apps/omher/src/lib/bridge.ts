@@ -1,4 +1,5 @@
 import type { BridgeError, BridgeEvent, EventName, EventOf, Op, OpParams, OpResult } from "./protocol";
+import { ReplyDelivery } from "./replyDelivery";
 
 export type BridgeStatus = "connecting" | "open" | "closed";
 
@@ -14,7 +15,7 @@ export async function resolveBridgeUrl(): Promise<string> {
   return fromEnv || DEFAULT_BRIDGE_URL;
 }
 
-type Pending = { resolve: (v: never) => void; reject: (e: BridgeError) => void };
+type Pending = { resolve: (v: never) => void; reject: (e: BridgeError) => void; op: Op; sent?: ReturnType<ReplyDelivery["begin"]> };
 type Handler<K extends EventName> = (ev: EventOf<K>) => void;
 
 export interface BridgeOptions {
@@ -32,6 +33,7 @@ export class BridgeClient {
   private ws: WebSocket | null = null;
   private seq = 0;
   private pending = new Map<string, Pending>();
+  private delivery = new ReplyDelivery();
   private handlers = new Map<string, Set<(ev: never) => void>>();
   private statusHandlers = new Set<(s: BridgeStatus) => void>();
   private attempt = 0;
@@ -72,7 +74,8 @@ export class BridgeClient {
     }
     const id = `r${++this.seq}`;
     return new Promise<OpResult<K>>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: never) => void, reject });
+      this.pending.set(id, { resolve: resolve as (v: never) => void, reject, op,
+        ...(op === "chat.send" ? { sent: this.delivery.begin() } : {}) });
       ws.send(JSON.stringify({ ...(params ?? {}), id, op }));
     });
   }
@@ -167,6 +170,7 @@ export class BridgeClient {
     }
     if (typeof msg !== "object" || msg === null) return;
     if (typeof msg.event === "string") {
+      this.delivery.observe(msg);
       const ev = msg as unknown as BridgeEvent;
       for (const key of [ev.event, "*"]) {
         const set = this.handlers.get(key);
@@ -178,7 +182,17 @@ export class BridgeClient {
       const p = this.pending.get(msg.id);
       if (!p) return;
       this.pending.delete(msg.id);
-      if (msg.ok) p.resolve(msg.result as never);
+      if (msg.ok) {
+        if (p.sent) this.delivery.accept(p.sent, msg.result);
+        let result = msg.result;
+        if (p.op === "performance.read" && result && typeof result === "object") {
+          const report = result as OpResult<"performance.read">;
+          if (Array.isArray(report.recent)) result = { ...report, recent: report.recent.map((row) => ({
+            ...row, ...(this.delivery.forTrace(row.trace_id) ?? { client_first_text_ms: null, client_submit_ack_ms: null }),
+          })) };
+        }
+        p.resolve(result as never);
+      }
       else p.reject((msg.error as BridgeError) ?? { code: "unknown", message: "request failed" });
     }
   }

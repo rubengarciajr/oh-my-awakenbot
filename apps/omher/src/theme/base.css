@@ -97,6 +97,12 @@ a {
     opacity: 1;
   }
 }
+/* Keep the live workspace connected while hidden without spending frames on its display. */
+html[data-visual-active="false"] *,
+html[data-visual-active="false"] *::before,
+html[data-visual-active="false"] *::after {
+  animation-play-state: paused !important;
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

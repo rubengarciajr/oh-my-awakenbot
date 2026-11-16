@@ -6,10 +6,13 @@ import { Avatar, Pill } from "../../ui";
 import { isMac } from "../../app/shortcuts";
 import { reasoningLabel } from "../model/levels";
 import { t } from "../../i18n";
+import { PanelButton } from "./PanelButton";
+import { SshMarker } from "../../peers/SshMarker";
 
 export { reasoningLabel };
 
-/** Header: avatar + name (toggles Details), the places chip slot, and ONE control on the right. */
+/** Header: avatar + name (toggles Details), the places chip slot, and on the right the model control plus the
+ *  right panel's button. */
 export function Header({ bot, chat }: { bot: Bot; chat: Chat | undefined }) {
   const s = useStore();
   const Places = slots.headerPlaces;
@@ -29,10 +32,11 @@ export function Header({ bot, chat }: { bot: Bot; chat: Chat | undefined }) {
         <Avatar bot={bot.name} size={26} />
         <span className="head-title">{bot.display_name}</span>
       </button>
+      {bot.host && <SshMarker bot={bot} full testId="head-ssh" />}
       {Places && <Places bot={bot} />}
       <div className="head-right" data-testid="head-right">
         {Picker ? (
-          <Picker bot={bot} chat={chat} />
+          <Picker key={bot.name} bot={bot} chat={chat} />
         ) : (
           <Pill as="span" className="model-pill">
             <span data-testid="model-label" title={model}>
@@ -46,6 +50,7 @@ export function Header({ bot, chat }: { bot: Bot; chat: Chat | undefined }) {
             )}
           </Pill>
         )}
+        <PanelButton bot={bot} />
       </div>
     </header>
   );

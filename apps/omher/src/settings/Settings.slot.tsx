@@ -1,11 +1,12 @@
 // Settings view (main column while `ui.view === "settings"`). Left list: You (Accounts), Bots (one page per bot: Profile,
-// Model, Work) and App (General, Providers, Computer). Pages are `bot:<name>` and the App page names; the
+// Model, Work) and App (General, Terminal, Agents, Providers, Computer). Pages are `bot:<name>` and the App page names; the
 // page lives in the store (`ui.settingsPage`) so the model popover can deep-link to a bot.
 import { useEffect, useState } from "react";
 import "./settings.css";
 import type { SlotProps } from "../features";
 import type { Bot, ModelOptions } from "../lib/protocol";
-import { notifyEnabled, setNotifyEnabled, useStore } from "../state/store";
+import { getStore, notifyEnabled, setNotifyEnabled, useStore } from "../state/store";
+import { addToList } from "../addbot/bots";
 import { appSounds, setSoundsEnabled, soundsEnabled } from "../lib/sounds";
 import { LANG_NAMES, LANGS, t, type Key, type Lang } from "../i18n";
 import { Avatar, GridIcon, ModelIcon, SourceIcon } from "../ui";
@@ -14,12 +15,19 @@ import { reasoningLabel } from "../chat/model/levels";
 import { Appearance } from "./Appearance";
 import { AccountsPage } from "./accounts/AccountsPage";
 import { ProvidersPage } from "./providers/ProvidersPage";
+import { ReplyPerformance } from "./ReplyPerformance";
+import { TerminalPage } from "./terminal/TerminalPage";
+import { SshMarker } from "../peers/SshMarker";
+import { RemoteMachines } from "../peers/RemoteMachines";
+import { AgentsPage } from "./agents/AgentsPage";
 import { AvatarEditor, BotFacts, NameEditor, PictureActions, placeName, useBotInfo, usePictureEditor } from "./BotIdentity";
 
 export const slot = "settings";
 
 const APP_PAGES: { id: string; label: Key }[] = [
   { id: "general", label: "set.general" },
+  { id: "terminal", label: "set.terminal" },
+  { id: "agents", label: "set.agents" },
   { id: "providers", label: "set.providers" },
   { id: "computer", label: "set.computer" },
 ];
@@ -72,6 +80,10 @@ export default function Settings({ page }: SlotProps["settings"]) {
           <AccountsPage />
         ) : current === "bots" ? (
           <BotsPage />
+        ) : current === "terminal" ? (
+          <TerminalPage />
+        ) : current === "agents" ? (
+          <AgentsPage />
         ) : current === "providers" ? (
           <ProvidersPage />
         ) : current === "computer" ? (
@@ -172,6 +184,7 @@ function BotPage({ bot }: { bot: Bot }) {
           <span className="be-sub">
             <i className={`st-dot ${live ? "working" : bot.status}`} aria-hidden="true" />
             {live ? t("bot.working") : statusText(bot.status)}
+            {bot.host && <SshMarker bot={bot} full testId="page-ssh" />}
           </span>
           {bot.description && <p className="be-desc">{bot.description}</p>}
           <div className="be-acts">
@@ -237,7 +250,8 @@ function BotPage({ bot }: { bot: Bot }) {
   );
 }
 
-/** Every bot at a glance: picture, name, status, what it is doing and where it works. */
+/** Every bot at a glance: picture, name, status, what it is doing and where it works. It lists every profile on
+ *  this computer (management, not the sidebar list); each card says whether the bot is in the sidebar, or adds it. */
 function BotsPage() {
   const s = useStore();
   const [q, setQ] = useState("");
@@ -284,7 +298,9 @@ function BotCard({ bot }: { bot: Bot }) {
   const info = useBotInfo(bot);
   const places = info ? Object.entries(info.places).slice(0, 3) : [];
   const live = bot.running || !!s.chats[bot.name]?.turn;
+  const listed = (s.ui.roster ?? []).includes(bot.name);
   return (
+    <div className="bot-card-w">
     <button
       type="button"
       className="bot-card"
@@ -298,7 +314,7 @@ function BotCard({ bot }: { bot: Bot }) {
           <span>
             <i className={`st-dot ${live ? "working" : bot.status}`} aria-hidden="true" />
             {live ? t("bot.working") : statusText(bot.status)}
-            {bot.name !== bot.display_name.toLowerCase() && <code>{bot.name}</code>}
+            {bot.host ? <SshMarker bot={bot} testId={`card-ssh-${bot.name}`} /> : bot.name !== bot.display_name.toLowerCase() && <code>{bot.name}</code>}
           </span>
         </span>
       </span>
@@ -316,6 +332,22 @@ function BotCard({ bot }: { bot: Bot }) {
         ))}
       </span>
     </button>
+      {listed ? (
+        <span className="bc-list in" data-testid={`bot-inlist-${bot.name}`}>
+          {t("set.inList")}
+        </span>
+      ) : (
+        <button
+          type="button"
+          className="bc-list"
+          onClick={() => void addToList(getStore(), bot.name, { open: false })}
+          aria-label={t("ab.addOf", { name: bot.display_name })}
+          data-testid={`bot-addlist-${bot.name}`}
+        >
+          {t("set.addToList")}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -326,6 +358,7 @@ const SHORTCUTS: [string, Key][] = [
   [`${MOD}.`, "key.details"],
   [`${MOD},`, "key.settings"],
   [`${MOD}J`, "key.nextAsk"],
+  [MOD === "⌘" ? `${MOD}N · ${MOD}T` : `${MOD}N`, "key.newSession"],
   ["1 · 2 · 3", "key.cardKeys"],
   ["Esc", "key.stop"],
 ];
@@ -427,6 +460,7 @@ function GeneralPage() {
           </Value>
         </Row>
       </div>
+      <RemoteMachines />
     </div>
   );
 }
@@ -442,6 +476,7 @@ function ComputerPage() {
           </Value>
         </Row>
       </div>
+      <ReplyPerformance />
     </div>
   );
 }

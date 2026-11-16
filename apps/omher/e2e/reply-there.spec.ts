@@ -33,11 +33,15 @@ const submits = async (): Promise<{ bot: string; session_id: string; text: strin
 /** Every op the app may call: reads, plus chat.send to the main chat. Nothing here writes to a messenger. */
 const ALLOWED = new Set([
   "hello",
+  // the sidebar reads each listed bot's threads (a read)
+  "thread.list",
   // every bot's automations, read from files (no gateway)
   "automations.list",
   "bots.list",
   "bots.avatar",
   "bots.info",
+  // Hermes' read-only readiness probe for the bot in view (setup.runtime_check)
+  "bots.ready",
   "chat.open",
   "chat.send",
   "elsewhere.list",
@@ -48,6 +52,11 @@ const ALLOWED = new Set([
   "accounts.list",
   // channel names for Slack / Discord link chips: a read of the bot's own sessions
   "links.places",
+  // the bot's own plans, for the header's panel button (a read of its dag runs)
+  "runs.list",
+  // a remote machine saved in ~/.omher/peers.json comes back on boot: its bots join the list (rule 31)
+  "peers.attach",
+  "peers.detach",
 ]);
 
 /** Screenshot after every running animation (chip / menu `pop`) has finished; under load they start late. */

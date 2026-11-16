@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import uuid
+from omher_performance import ReplyTimings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack
 from datetime import datetime
@@ -41,18 +42,31 @@ from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-VERSION = "0.2.4"
+VERSION = "0.2.12"
 BOT_CHAT_TITLE = "Bot Chat"
 FOLDER_CHAT_PREFIX = "omher · "
 MAX_FOLDER_CHATS = 16
+# Threads under a bot (`thread.*`): Hermes sessions the bridge creates for the bot, titled with the same prefix so
+# `thread.list` finds them again after a restart. At most this many are attached at once per bot.
+THREAD_PREFIX = FOLDER_CHAT_PREFIX
+MAX_THREADS = 48
+THREAD_TITLE = 40  # chars of the first message a new thread takes as its title
+_THREAD_PLACEHOLDER = re.compile(r"new thread [0-9a-f]{6}")
 LOCAL_SOURCES = frozenset({"tui", "cli", "local", "desktop", "acp", "api_server", "omher"})
 REASONING_LEVELS = ["none", "low", "medium", "high", "xhigh"]
+# `bots.ready {provider}`: a Hermes provider id, the shell's `valid_provider` pattern (the three sign-in ids the desktop
+# shell allows pass it; the strict check is a read either way).
+PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
+# setup.runtime_check answers a retryable error while its probe still runs: waits before asking again (None: give up).
+READY_RETRY = (0.5, 1.0, None)
 RUNNING_STATUSES = frozenset({"working", "streaming", "waiting", "starting"})
 MAX_ELSEWHERE = 20
 MAX_OPEN_MESSAGES = 200
+HISTORY_PAGE_ROWS = 60
 PEEK_CHARS = 400
 THINKING_MIN_GAP = 1.0
 CONNECT_TIMEOUT = 60.0
+START_OWNER_TIMEOUT = 5.0
 OFFLINE_COOLDOWN = 10.0
 # chat.attach: one 100 MB file arrives base64'd in one frame; Hermes' own attach calls cap images (25 MB) and
 # PDFs (50 MB) lower and say so. pdf.attach renders pages, so it gets more than the default RPC deadline.
@@ -66,6 +80,16 @@ JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 PLUGIN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}")  # an installed plugin's name or key (`image_gen/fal`)
 # A curated catalog entry's name: no `/` or `:`, so neither a Git URL nor `owner/repo` can pass as one.
 CATALOG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+# Hermes' own profile id grammar (`hermes_constants.PROFILE_ID_RE`); `default` passes it too.
+PROFILE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+RESTART_TIMEOUT = 90.0   # seconds one `hermes -p <bot> gateway restart` may take (Hermes' own updater allows 90)
+RESTART_WAIT = 120.0     # seconds the bridge keeps trying to attach to a restarted bot
+RESTART_POLL = 2.0
+RESTART_ANYWAY_WINDOW = 600.0  # "Restart anyway" (`--yes`) is taken only this long after Hermes refused
+RESTART_LINES = 12
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# Variables that make a child think it is the gateway itself (Hermes' update_restart_recovery drops the same three).
+_GATEWAY_MARKERS = ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE")
 def default_hermes_home(environ=None, platform: str | None = None) -> Path:
     """Hermes' own default home: `HERMES_HOME`, else `~/.hermes`, or `%LOCALAPPDATA%\\hermes` on Windows
     (the same rule as Hermes' `hermes_constants`, kept here so the bridge needs no Hermes import to start)."""
@@ -745,7 +769,7 @@ def read_bot_facts(profile_dir: Path) -> dict:
             "last_active": last, "skills": skills, "routines": len(read_routines(profile_dir))}
 
 
-# ---------------------------------------------------------------- skills (read-only, the composer's ./ picker)
+# ---------------------------------------------------------------- skills (read-only, the composer's $ picker)
 
 SKILL_HEAD_MAX = 8 * 1024     # bytes read from the top of a SKILL.md: its frontmatter, nothing past it
 SKILL_DESC_MAX = 120
@@ -811,17 +835,44 @@ def read_skill_head(path: Path) -> dict | None:
     return {"name": _frontmatter_value(block, "name"), "description": _frontmatter_value(block, "description")}
 
 
+def skill_roots(profile_dir: Path) -> list[Path]:
+    """The folders a bot's skills come from, in Hermes' own order (agent/skill_utils.py get_skill_search_roots):
+    `<profile>/skills`, then each existing folder the profile's `config.yaml` names in `skills.external_dirs`
+    (`~` and `${VAR}` expanded, a relative entry taken from the profile folder, a repeat skipped). oh-my-hermes
+    registers its skills there, not in the profile's own folder. Read-only: the parsed config, and a stat."""
+    roots = [profile_dir / "skills"]
+    cfg = _load_yaml(profile_dir / "config.yaml").get("skills")
+    raw = cfg.get("external_dirs") if isinstance(cfg, dict) else None
+    entries = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    for entry in entries:
+        text = str(entry).strip()
+        if not text:
+            continue
+        p = Path(os.path.expanduser(os.path.expandvars(text)))
+        if not p.is_absolute():
+            p = profile_dir / p
+        if p.is_dir() and os.path.realpath(p) not in {os.path.realpath(r) for r in roots}:
+            roots.append(p)
+    return roots
+
+
 def read_skills(profile_dir: Path) -> list[dict]:
-    """`skills.list`: the bot's own skills (`<profile>/skills/**/SKILL.md`), each as the `/command` Hermes registers
-    for it (`name`, the slug of the frontmatter name or of the folder's) and a one-line description, sorted, one
-    row per slug (the first in path order wins, as in Hermes' scan). Symlinked skill folders and files are
-    followed as Hermes' own scan follows them, each real folder once (a link back up is a cycle, not a loop);
-    hidden folders (`.archive`, `.hub`) are skipped. Read-only: the first 8 KB of each SKILL.md."""
-    root = profile_dir / "skills"
-    if not root.is_dir():
-        return []
+    """`skills.list`: the bot's skills (`SKILL.md` under each of `skill_roots`: its own `<profile>/skills`, then
+    the `skills.external_dirs` its config names), each as the `/command` Hermes registers for it (`name`, the slug
+    of the frontmatter name or of the folder's) and a one-line description, sorted, one row per slug (the first in
+    root and path order wins, as in Hermes' scan). Symlinked skill folders and files are followed as Hermes' own
+    scan follows them, each real folder once (a link back up is a cycle, not a loop); hidden folders (`.archive`,
+    `.hub`) are skipped. Read-only: the first 8 KB of each SKILL.md."""
     found: dict[str, str] = {}
     seen: set[str] = set()
+    for root in skill_roots(profile_dir):
+        if root.is_dir():
+            _scan_skills(root, found, seen)
+    return [{"name": n, "description": found[n]} for n in sorted(found)]
+
+
+def _scan_skills(root: Path, found: dict[str, str], seen: set[str]) -> None:
+    """One skill root into `found` (slug -> description); `seen` holds the real folders already read."""
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         real = os.path.realpath(dirpath)
         if real in seen:
@@ -844,7 +895,6 @@ def read_skills(profile_dir: Path) -> list[dict]:
             continue
         desc = " ".join(head["description"].split())
         found[slug] = desc if len(desc) <= SKILL_DESC_MAX else desc[:SKILL_DESC_MAX - 1].rstrip() + "…"
-    return [{"name": n, "description": found[n]} for n in sorted(found)]
 
 
 # ---------------------------------------------------------------- usage meters (read-only)
@@ -1082,12 +1132,12 @@ def _origin_place(origin) -> dict | None:
     return {"platform": platform, "place": name[:80]}
 
 
-def read_automations(profile_dir: Path) -> list[dict]:
+def read_automations(profile_dir: Path, jobs: list[dict] | None = None) -> list[dict]:
     """A bot's cron jobs for the Automations page: `read_routines`' fields plus what the detail panel shows
     (prompt or script name, delivery, created, last error, repeat). Read-only; `cron.manage` on the bot's gateway is the
-    only way omher changes a job."""
+    only way omher changes a job. ``jobs``: the raw rows already read from that same file (one read per poll)."""
     out = []
-    for j in _read_jobs(profile_dir):
+    for j in (_read_jobs(profile_dir) if jobs is None else jobs):
         base = _routine_row(j)
         rep = j.get("repeat") if isinstance(j.get("repeat"), dict) else {}
         times, done = rep.get("times"), rep.get("completed")
@@ -1100,8 +1150,186 @@ def read_automations(profile_dir: Path) -> list[dict]:
                     "created_at": j.get("created_at"),
                     "last_error": _clip(str(j.get("last_error") or j.get("last_delivery_error") or ""), 300) or None,
                     "repeat": {"times": times if isinstance(times, int) else None,
-                               "completed": done if isinstance(done, int) else 0}})
+                                "completed": done if isinstance(done, int) else 0},
+                    "watch": read_watch(profile_dir, j, base)})
     return out
+
+
+# ---------------------------------------------------------------- channel watches (Automations page)
+# A channel watch is a cron job whose script is the channel-watch collector, installed once per watch as
+# `<profile>/scripts/channel_watch_<watch>.py` with its config at `<profile>/channel_watch/<watch>.json`. The page
+# shows what it watches and whether the bot can read the channel; both come from files only, read-only: that config
+# (platform, channel names, keywords; it holds no token) and the newest few run records Hermes keeps in
+# `<profile>/cron/output/<job id>/*.md`. The collector prints `channel-watch: unreadable reason=<r> ...` (exit 4-6) or
+# `channel-watch: error reason=<no_token|config>` (exit 2-3); Hermes puts that in the run's `## Script Error` block.
+# When only some channels are unreadable it exits 0 and the same line sits in the `## Script Output` block next to the
+# readable channels' posts. Post lines start with `- `, so a post can never start a line the bridge reads.
+
+WATCH_SCRIPT = re.compile(r"channel_watch_([a-z0-9][a-z0-9_-]{0,63})\.py")
+WATCH_UNREADABLE = re.compile(r"(?m)^channel-watch: (?:unreadable|error) reason=([a-z_]{1,40})(?: [^\n]*?channel=(\S{1,80}))?")
+SCRIPT_HEADING = re.compile(r"(?m)^## Script (Error|Output)[ \t]*$")
+RESPONSE_HEADING = re.compile(r"(?m)^## Response[ \t]*$")
+WATCH_CONDITION = re.compile(r"for one condition:\s*(.+?)\.?\s*(?:\n\s*\n|$)", re.S)
+WATCH_CONFIG_MAX = 64 * 1024     # bytes of a watch config read
+WATCH_RUN_MAX = 256 * 1024       # bytes of one run record read
+WATCH_RUNS = 20                  # newest run records looked at for the last alert
+CRLF = re.compile(r"\r\n")       # a run record Hermes wrote in text mode on Windows
+
+
+def _watch_config(profile_dir: Path, watch: str) -> dict:
+    try:
+        p = profile_dir / "channel_watch" / f"{watch}.json"
+        if not p.is_file() or p.is_symlink():
+            return {}
+        with p.open("rb") as f:
+            data = json.loads(f.read(WATCH_CONFIG_MAX).decode("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _watch_runs(profile_dir: Path, job_id: str) -> list[tuple[float, str]]:
+    """The job's newest run records (mtime, text), newest first; read-only and bounded."""
+    if not JOB_ID.fullmatch(job_id):
+        return []
+    d = profile_dir / "cron" / "output" / job_id
+    if d.is_symlink():
+        return []
+    try:
+        files = sorted((f for f in d.glob("*.md") if f.is_file() and not f.is_symlink()), key=lambda f: f.name, reverse=True)
+    except OSError:
+        return []
+    out = []
+    for f in files[:WATCH_RUNS]:
+        try:
+            with f.open("rb") as fh:
+                # Hermes writes run records in text mode: CRLF on Windows, which the line-anchored headings expect as LF
+                text = CRLF.sub("\n", fh.read(WATCH_RUN_MAX).decode("utf-8", "replace"))
+                out.append((f.stat().st_mtime, text))
+        except OSError:
+            continue
+    return out
+
+
+def _script_block(run: str) -> tuple[str, str] | None:
+    """`("Error" | "Output", fenced body)` of the run's script block: its heading on a line of its own."""
+    head = SCRIPT_HEADING.search(run)
+    if not head:
+        return None
+    fence = run.find("\n```", head.end())
+    if fence < 0:
+        return head.group(1), ""
+    start = run.find("\n", fence + 1) + 1
+    end = run.find("\n```", start) if start else -1
+    return head.group(1), run[start:end] if end >= 0 else run[start:start + 4000]
+
+
+def _script_error(run: str) -> tuple[str, str | None] | None:
+    """`(reason, channel)` when this run's script block is a collector failure or names an unreadable channel."""
+    block = _script_block(run)
+    if block is None:
+        return None
+    kind, body = block
+    m = WATCH_UNREADABLE.search(body)
+    if m:
+        return m.group(1), m.group(2) if m.group(2) not in (None, "*") else None
+    if kind == "Output":
+        return None
+    code = re.search(r"Script exited with code (\d+)", body[:4000])
+    return (f"exit_{code.group(1)}" if code else "script", None)
+
+
+def _alerted(run: str) -> bool:
+    """A run whose script reported posts and whose answer was delivered (not `[SILENT]`)."""
+    block = _script_block(run)
+    heads = list(RESPONSE_HEADING.finditer(run))
+    if not block or block[0] != "Output" or not heads:
+        return False
+    answer = run[heads[-1].end():].strip()
+    first = answer.splitlines()[0].strip().upper() if answer else ""
+    return bool(answer) and first not in ("[SILENT]", "SILENT", "NO_REPLY", "NO REPLY")
+
+
+def read_watch(profile_dir: Path, job: dict, row: dict) -> dict | None:
+    """What the Automations page shows for a channel watch, or None for any other job."""
+    m = WATCH_SCRIPT.fullmatch(Path(str(job.get("script") or "")).name)
+    if not m:
+        return None
+    watch = m.group(1)
+    cfg = _watch_config(profile_dir, watch)
+    platform = str(cfg.get("platform") or "").lower()
+    channels, names = [], {}
+    raw = cfg.get("channels")
+    for c in raw if isinstance(raw, list) else []:
+        label = c.get("name") or c.get("id") if isinstance(c, dict) else c
+        if isinstance(label, (str, int)) and str(label).strip():
+            channels.append(str(label).strip()[:80])
+            if isinstance(c, dict) and c.get("id"):
+                names[str(c["id"])] = channels[-1]
+    cond = WATCH_CONDITION.search(str(job.get("prompt") or ""))
+    what = " ".join(cond.group(1).split())[:200] if cond else ", ".join(_strs(cfg.get("keywords"), 12))[:200]
+    runs = _watch_runs(profile_dir, str(job["id"]))
+    paused = not row["enabled"] or str(job.get("state") or "") == "paused" or bool(job.get("paused_at"))
+    failed = str(row.get("last_status") or "").lower() in FAILED_RUN
+    err = _script_error(runs[0][1]) if runs else None
+    reason = None
+    if not cfg:
+        reason = {"code": "config", "channel": None}
+    elif err:
+        reason = {"code": err[0], "channel": names.get(err[1], err[1]) if err[1] else None}
+    elif failed:
+        reason = {"code": "failed", "channel": None}
+    last_alert = next((ts for ts, run in runs if _alerted(run)), None)
+    return {"name": watch, "platform": platform if platform in ("slack", "discord") else None, "channels": channels[:10],
+            "what": what, "interval": row["schedule"], "last_check": row["last_run_at"], "last_alert": last_alert,
+            "state": "paused" if paused else ("not_readable" if reason else "ok"), "reason": reason}
+
+
+# ---------------------------------------------------------------- watch results (bot-chat automations)
+# A job delivering to `bot-chat:<bot>` hands its answer to that bot's Bot Chat as an inbound turn whose user row starts
+# with Hermes' header (cron/scheduler_delivery.py `bot_chat_message`). jobs.json says per run whether it handed one
+# over: `last_delivery_queued` is set only on a run that delivered to a Bot Chat; a silent run (`wakeAgent: false`,
+# `[SILENT]`) leaves it null although `last_run_at` moves.
+
+CRON_HEADER = re.compile(r'\[Cronjob "(.*?)" output — scheduled job, not the user\.[^\]\n]*\]\s*')
+FAILED_RUN = frozenset({"error", "failed", "failure", "delivery_failed", "blocked_config"})
+WATCH_ATTACH_RETRY = 60.0  # s between tries to attach a bot-chat target that could not be attached
+
+
+def watch_of(text: str) -> str | None:
+    """The job name of an inbound cron delivery row, else None."""
+    m = CRON_HEADER.match(text or "")
+    return _clip(m.group(1), 120) if m else None
+
+
+def _bot_chat_label(part: str, own: str | None) -> str | None:
+    """`bot-chat[:<profile>]` (any case, as Hermes reads it) -> the profile; bare or `(own)` -> `own`; else None."""
+    kind, sep, label = str(part).strip().partition(":")
+    if kind.strip().lower() != "bot-chat":
+        return None
+    label = label.strip()
+    if not sep or not label or label == "(own)":
+        return own or None
+    return label
+
+
+def bot_chat_targets(deliver, own: str | None = None) -> set[str]:
+    """The profiles a job's `deliver` hands its answer to as a Bot Chat turn (`bot-chat:<profile>`, comma lists too).
+    `own`: the job's own profile, which a bare `bot-chat` means."""
+    return {t for t in (_bot_chat_label(part, own) for part in str(deliver or "").split(",")) if t}
+
+
+def delivered_to(job: dict, own: str | None = None) -> str | None:
+    """The Bot Chat this job's last run handed its answer to, or None (a silent run, or not a bot-chat job)."""
+    queued = job.get("last_delivery_queued")
+    if not isinstance(queued, dict) or not queued:
+        return None
+    for key in queued:
+        label = _bot_chat_label(key, own)
+        if label:
+            return label
+    targets = sorted(bot_chat_targets(job.get("deliver"), own))
+    return targets[0] if targets else None
 
 
 # ---------------------------------------------------------------- plugins (catalog cache + folder names)
@@ -1196,6 +1424,9 @@ def plugin_row(row: dict, catalog: dict[str, dict]) -> dict:
             "tier": str(row.get("catalog_tier") or cat.get("tier") or ("bundled" if source == "bundled" else "user")),
             "category": str(cat.get("category") or ""), "catalog_name": str(row.get("catalog_name") or "") or None,
             "tools": len(tools) or len(cat.get("tools") or []), "hooks": len(cat.get("hooks") or []),
+            # the tools this plugin's own code registered in the RUNNING gateway (Hermes' loader record, never the
+            # catalog): 0 for an enabled plugin means the gateway has not loaded it yet (a restart loads it)
+            "live_tools": len(tools),
             "update_available": bool(row.get("update_available")), "needs_env": needs[:8]}
 
 
@@ -1483,6 +1714,215 @@ def gh_pr_view(repo: str, number: int, *, gh: str | None = None, timeout: float 
     return view if isinstance(view, dict) else None
 
 
+def hermes_path(which=None, root: Path | None = None) -> str | None:
+    """Hermes' own command: on PATH, else the launcher or venv script of the Hermes checkout running this bridge
+    (an app opened from the Dock has a short PATH)."""
+    import shutil
+    which = which or shutil.which
+    found = which("hermes")
+    if found:
+        return found
+    root = root or DEFAULT_HERMES_ROOT
+    if os.name == "nt":
+        rel = (("venv", "Scripts", "hermes.exe"), (".venv", "Scripts", "hermes.exe"))
+    else:
+        rel = ((".hermes", "bin", "hermes"), ("venv", "bin", "hermes"), (".venv", "bin", "hermes"))
+    for parts in rel:
+        p = Path(root, *parts)
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return None
+
+
+def restart_argv(hermes: str, bot: str, interrupt: bool) -> list[str]:
+    """`hermes -p <gateway> gateway restart --detach`, plus `--yes` only for "Restart anyway". `bot` is the profile
+    that owns the gateway process (gateway_of): `default` for the host gateway, else a bot with its own gateway, so
+    this is always a process restart, never one profile's unserve/serve inside the host
+    (gateway_profile_lifecycle.py:69 returns early for `default`, :72-75 for a standalone profile). `-p default`,
+    not a bare `hermes gateway restart`: without `-p` Hermes follows the sticky `active_profile` file
+    (hermes_cli/main.py:525-536), which may name a served profile. `--detach`: with no service manager Hermes starts
+    the replacement in the background instead of becoming it (a child of omher). The profile id is checked here as
+    one argv element; nothing else varies."""
+    if not isinstance(bot, str) or not PROFILE_ID.fullmatch(bot):
+        raise ValueError(f"not a profile id: {bot!r}")
+    return [hermes, "-p", bot, "gateway", "restart", "--detach", *(["--yes"] if interrupt is True else [])]
+
+
+_WORK_TIME = re.compile(r", running (?:(\d+)m(?:(\d+)s)?|(\d+)s)\b")
+_WORK_CRON = re.compile(r"^cron job \S+(?: \((?P<name>[^)]*)\))? in(?:-process| external worker)")
+_WORK_RUN = re.compile(r"^(?P<kind>[a-z][a-z_-]{0,23}) run\b")
+
+
+def _session_bot(session: str, anywhere: bool = False) -> str | None:
+    """The profile a gateway session key belongs to: `agent:<ns>:...` (gateway/session.py:679-688: `agent:main` for
+    the default profile, `agent:main~` for a profile named main, else `agent:<name>`). `anywhere`: the first such key
+    in a line whose shape is not otherwise read (a `<kind> run <session>` line, or one Hermes added later)."""
+    key = r"agent:([a-z0-9][a-z0-9_~-]{0,64}):"
+    m = re.search(r"(?:^|\s)" + key, session) if anywhere else re.match(key, session)
+    if not m:
+        return None
+    ns = m.group(1)
+    return "default" if ns == "main" else ("main" if ns == "main~" else ns)
+
+
+def work_unit(line: str, jobs: dict[str, str] | None = None) -> dict:
+    """One live unit Hermes named, in plain parts: what it is and how long it has run; no run id, pid or job id.
+    Reads Hermes' own `describe_active_work_unit` (hermes_cli/update_cmd_drain_report.py:48-72): `chat turn <s>
+    [pid N][, running 3m05s] [model.., tool..]`, `cron job <id> (<name>) in-process|in external worker..`,
+    `background delegation <id>..`, `<kind> run..`. Anything else keeps only the time it names and whose it is. `bot`:
+    whose it is, from a session key in the line or a cron job's id in that bot's jobs.json (`jobs`); None when the
+    line does not say."""
+    m = _WORK_TIME.search(line)
+    secs = (int(m.group(1)) * 60 + int(m.group(2) or 0)) if m and m.group(1) else (int(m.group(3)) if m else None)
+    if line.startswith("chat turn "):
+        return {"kind": "chat", "name": None, "secs": secs, "bot": _session_bot(line[len("chat turn "):].split(" ", 1)[0])}
+    c = _WORK_CRON.match(line)
+    if c:
+        name = (c.group("name") or "").strip()
+        job = line[len("cron job "):].split(" ", 1)[0]
+        return {"kind": "cron", "name": _clip(name, 60) if name else None, "secs": secs, "bot": (jobs or {}).get(job)}
+    if line.startswith("background delegation "):
+        return {"kind": "task", "name": None, "secs": secs, "bot": None}
+    r = _WORK_RUN.match(line)
+    if r:
+        return {"kind": "run", "name": r.group("kind"), "secs": secs, "bot": _session_bot(line, anywhere=True)}
+    return {"kind": "work", "name": None, "secs": secs, "bot": _session_bot(line, anywhere=True)}
+
+
+def restart_outcome(code: int | None, output: str, jobs: dict[str, str] | None = None) -> dict:
+    """What Hermes' restart said: ok, refused (live work, with the lines it named) or failed (one line).
+    Hermes refuses with exit 1 and `Refusing to restart the gateway: N live session(s)...` plus one `  • <unit>`
+    line per unit (read into plain parts by work_unit) (hermes_cli/gateway_lifecycle_guards.py `_work_lines`); a served profile's restart that the host
+    did not confirm exits 0 with `... was not confirmed: <why>.` (gateway_profile_lifecycle.py)."""
+    lines = [ln.rstrip() for ln in _ANSI.sub("", output or "").splitlines()]
+    text = [ln.strip() for ln in lines if ln.strip()]
+    if code is None:
+        return {"outcome": "failed", "line": f"Hermes did not finish in {int(RESTART_TIMEOUT)} seconds."}
+    if any("Refusing to restart the gateway:" in ln for ln in text):
+        units = [ln.lstrip("•").strip() for ln in text if ln.startswith("•")]
+        head = next(ln for ln in text if "Refusing to restart the gateway:" in ln)
+        del head  # the count line: the units below say what each one is
+        return {"outcome": "refused", "work": [work_unit(u, jobs) for u in units][:RESTART_LINES] or [work_unit("")]}
+    unconfirmed = next((ln for ln in text if "was not confirmed" in ln), None)
+    if code == 0 and unconfirmed is None:
+        return {"outcome": "ok"}
+    # the most telling line: Hermes' own error line (✗, Error:), else the last one it printed
+    pick = unconfirmed or next((ln for ln in text if ln.startswith(("✗", "Error:"))), None) or (text[-1] if text else "")
+    return {"outcome": "failed", "line": _clip(pick.lstrip("✗ ").strip(), 300) or f"Hermes exited with code {code}."}
+
+
+def run_hermes_restart(hermes: str, bot: str, home: Path, interrupt: bool, timeout: float = RESTART_TIMEOUT,
+                       jobs: dict[str, str] | None = None) -> dict:
+    """Run Hermes' own restart for one bot and read what it said. No shell, nothing on stdin (so Hermes refuses
+    rather than asks while work is live), the Hermes root as HERMES_HOME, and none of the gateway's own markers."""
+    argv = restart_argv(hermes, bot, interrupt)
+    env = {k: v for k, v in os.environ.items() if k not in _GATEWAY_MARKERS}
+    env["HERMES_HOME"] = str(home)
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    try:
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env, **kw)
+    except subprocess.TimeoutExpired:
+        return restart_outcome(None, "")
+    except OSError as e:
+        return {"outcome": "failed", "line": _clip(f"Hermes could not be started: {e}", 300)}
+    return restart_outcome(r.returncode, r.stdout, jobs)
+
+
+def _standalone(profile_dir: Path) -> bool:
+    gw = _load_yaml(profile_dir / "config.yaml").get("gateway")
+    v = gw.get("standalone") if isinstance(gw, dict) else None
+    return v is True or (isinstance(v, str) and v.strip().lower() in ("1", "true", "yes", "on"))
+
+
+def _hermes_gateway_pid(home: Path) -> int | None:
+    """The verified pid of the gateway `home` runs itself: Hermes' own gateway.status.live_gateway_pid_for_home (pid
+    file + lock, then the runtime record, each proven against the live process). None when no gateway runs there,
+    or when Hermes cannot be imported (the bridge's own tests)."""
+    try:
+        from gateway.status import live_gateway_pid_for_home
+    except ImportError:
+        return None
+    try:
+        return live_gateway_pid_for_home(Path(home))
+    except Exception:
+        return None
+
+
+def _hermes_served(root: Path) -> list[str] | None:
+    """`served_profiles` the live host gateway recorded about itself (gateway/run_adapters `_record_served_profiles`,
+    read the way Hermes' gateway_multiplex_served.recorded_served_profiles reads it); None with no live host/record."""
+    if _hermes_gateway_pid(root) is None:
+        return None
+    try:
+        from gateway.status import read_runtime_status
+        served = (read_runtime_status(Path(root) / "gateway_state.json") or {}).get("served_profiles")
+    except Exception:
+        return None
+    return [str(x) for x in served] if isinstance(served, list) else None
+
+
+def gateway_of(home: Path, bot: str) -> str:
+    """Which gateway process serves `bot`, named by the profile that owns it, as Hermes decides it: a bot with
+    `gateway.standalone` (hermes_cli/gateway_profile_lifecycle.py:72-75) or a live gateway of its own (:101-102) is
+    served by that process; every other bot by the host gateway, the default profile's (:103-106)."""
+    for b in discover_bots(home):
+        if b["name"] == bot:
+            if b["is_default"]:
+                return "default"
+            return bot if _standalone(b["path"]) or _hermes_gateway_pid(b["path"]) is not None else "default"
+    return "default"
+
+
+def gateway_bots(home: Path, gateway: str) -> list[dict]:
+    """Every bot that goes down when `gateway`'s process restarts. A bot's own gateway: that bot. The host: the
+    default profile plus what the live host recorded it serves, else every named profile Hermes would serve (not
+    parked, not standalone, no gateway of its own: the tests of hermes_cli.profiles.profiles_to_serve)."""
+    bots = discover_bots(home)
+    if gateway != "default":
+        return [{"name": b["name"], "display_name": b["display_name"]} for b in bots if b["name"] == gateway]
+    served = _hermes_served(home)
+    out = []
+    for b in bots:
+        if not b["is_default"]:
+            if served is not None:
+                if b["name"] not in served:
+                    continue
+            elif (b["path"] / "gateway.parked").exists() or _standalone(b["path"]) or _hermes_gateway_pid(b["path"]) is not None:
+                continue
+        out.append({"name": b["name"], "display_name": b["display_name"]})
+    return out
+
+
+def plugin_load(res: dict) -> str:
+    """When a plugin change that Hermes' `plugins.manage` just made takes effect for the bot. Hermes reloads the
+    running gateway's plugins itself (plugins_activation.activate_plugin_now) and answers `restart_required` only
+    when no gateway answered that reload, or the gateway cannot import the plugin's dependencies.
+    live: from the bot's next conversation. reload: the gateway did not reload, one press asks it again.
+    restart: only a restart of the host gateway loads it (missing dependencies in the gateway process)."""
+    if not res.get("restart_required"):
+        return "live"
+    act = res.get("activation") if isinstance(res.get("activation"), dict) else {}
+    missing_in = act.get("missing_in") if isinstance(act.get("missing_in"), list) else []
+    if act.get("missing_dependencies") and ("gateway" in missing_in or not missing_in):
+        return "restart"
+    if not res.get("gateway_reloaded"):
+        return "reload"
+    return "live"  # only another process (Hermes' desktop backend) lacks it; the bot's gateway has it
+
+
+def reload_plugins(home: Path, root: Path):
+    """Hermes' own `reload-plugins` control verb, the way Hermes' plugins_activation.reload_running_gateway asks
+    it: the gateway serving this profile on its own socket, else the host gateway's for a served profile."""
+    from gateway.control_socket import reload_gateway_plugins
+    answer = reload_gateway_plugins(home)
+    if answer is None and Path(home).resolve() != Path(root).resolve():
+        answer = reload_gateway_plugins(root, profile_home=home)
+    return answer
+
+
 class PrStates:
     """PR states by (repo, number), each kept PR_TTL seconds (a failed look-up PR_TTL_MISS). `view` is the look-up
     (gh_pr_view; tests pass a stub)."""
@@ -1542,6 +1982,8 @@ DELEG_LIMIT = 40        # newest delegation folders read per bot
 LOG_HEAD = 2048         # bytes read from the top of a task log (goal, started)
 LOG_TAIL = 6144         # bytes read from its end (the `final` lines)
 STALE_AFTER = 3600.0    # a "running" task whose log has not moved for this long has stopped reporting
+QUIET_RUN = 86400.0     # a "running" dag run whose record has not changed for this long, with no helper log moving
+                        # (STALE_AFTER), is no longer live: `stale` (nothing settled it; omher never does either)
 ROUTE_FRESH = 900.0     # OMH's own window: a route record older than this no longer describes a dispatch
 _FINAL = re.compile(r"^\d\d:\d\d:\d\d final\s+\|\s*(.*)$")
 _TASK_STATE = {"running": "running", "completed": "done", "failed": "failed", "error": "failed",
@@ -1874,6 +2316,24 @@ def attach_delegations(run: dict, delegs: list[dict]) -> dict:
     return run
 
 
+def mark_stale(run: dict, path: Path | None, delegs: list[dict], now: float) -> dict:
+    """`stale: true` on a running dag run that is not live any more: its record (the `updated_at` it carries, and
+    the file's own mtime) did not change for QUIET_RUN, and none of its helpers is still reporting (a task log
+    that has not moved for STALE_AFTER already reads as stalled). The state stays as the record says."""
+    if run["state"] != "running":
+        return run
+    changed = run["updated"]
+    try:
+        changed = max(changed, path.stat().st_mtime) if path is not None else changed
+    except OSError:
+        pass
+    name = run["id"].rsplit("/", 1)[-1]
+    reporting = any(t.get("dag", {}).get("run") == name and t["status"] == "running" for d in delegs for t in d["tasks"])
+    if now - changed > QUIET_RUN and not reporting:
+        run["stale"] = True
+    return run
+
+
 class DagRuns:
     """Reads `<omh home>/runtime/dag/*/*.json` for one bot: a run belongs to the bot when its `session_id` is a
     session in the bot's own state.db. A record caught mid-write keeps its last good parse (cache keyed by
@@ -1917,15 +2377,16 @@ class DagRuns:
         except sqlite3.Error:
             return set()
 
-    def _owned(self, bot: str, profile_dir: Path):
+    def _owned(self, bot: str, profile_dir: Path, now: float | None = None):
         """(json path or None, record or None, AgentRun) for each of the bot's runs: its dag runs with their
         helpers' models and routes filled in, then its delegate_task fan-outs that belong to no dag run."""
+        now = time.time() if now is None else now
         mine = self._sessions(profile_dir)
         home = omh_home_for(profile_dir)
         records = load_route_records(home)
-        delegs = attach_routes(self.delegations.list(profile_dir), records, mine)
+        delegs = attach_routes(self.delegations.list(profile_dir, now=now), records, mine)
         table = route_table(records, mine)
-        out = [(path, rec, attach_planned(attach_delegations(run, delegs), table))
+        out = [(path, rec, mark_stale(attach_planned(attach_delegations(run, delegs), table), path, delegs, now))
                for path, rec, run in self._dag(bot, profile_dir, mine)]
         for d in delegs:
             if d["tasks"] and not any(t.get("dag") for t in d["tasks"]):
@@ -1969,9 +2430,9 @@ class DagRuns:
         ids = [str(n["id"]) for n in rec.get("nodes") or [] if isinstance(n, dict) and isinstance(n.get("id"), str)]
         return {i for i in ids if self._handoff_file(root, path, i) is not None}
 
-    def list(self, bot: str, profile_dir: Path) -> list[dict]:
-        runs = [run_summary(run) for _, _, run in self._owned(bot, profile_dir)]
-        runs.sort(key=lambda r: (r["state"] != "running", -r["updated"]))
+    def list(self, bot: str, profile_dir: Path, now: float | None = None) -> list[dict]:
+        runs = [run_summary(run) for _, _, run in self._owned(bot, profile_dir, now)]
+        runs.sort(key=lambda r: (r["state"] != "running" or bool(r.get("stale")), -r["updated"]))
         return runs
 
     def get(self, bot: str, profile_dir: Path, run_id: str) -> dict:
@@ -2001,7 +2462,11 @@ class DagRuns:
 # Only a session's short title and each sub-run's name, model, state, times and final text (SUMMARY_MAX) leave
 # here; prompts and message bodies are never kept. Nothing here starts, resumes or stops a CLI session.
 
-CLI_AGENTS = ("claude", "codex", "pi", "omp", "grok")
+CLI_AGENTS = ("claude", "codex", "omo", "pi", "omp", "grok")
+OMO_TASKS = 200             # newest OmO task records read per call
+_OMO_TASK = re.compile(r"^st_[A-Za-z0-9_-]{1,64}\.json$")
+_OMO_STATE = {"completed": "done", "failed": "failed", "error": "failed", "cancelled": "cancelled",
+              "aborted": "cancelled", "running": "running", "queued": "running", "pending": "running"}
 CLI_STALE = 600.0           # a sub-run with no result whose transcript has not moved for this long: failed, "no result"
 CLI_WINDOW = 7 * 86400.0    # default `since`: sessions started in the last week
 CLI_FILES = 60              # newest session files read per agent and call
@@ -2029,7 +2494,7 @@ def cli_homes(environ=None) -> dict[str, Path]:
     home = Path.home()
     return {"claude": Path(env.get("CLAUDE_CONFIG_DIR") or home / ".claude"),
             "codex": Path(env.get("CODEX_HOME") or home / ".codex"),
-            "pi": home / ".pi", "omp": home / ".omp", "grok": home / ".grok"}
+            "omo": home / ".omo", "pi": home / ".pi", "omp": home / ".omp", "grok": home / ".grok"}
 
 
 def claude_slug(cwd: str) -> str:
@@ -2179,7 +2644,7 @@ def _claude_fold(s: dict, raw: bytes) -> None:
                 t["launched"] = True  # a background agent: its end arrives later as a task notification
             else:
                 t["result"] = {"error": bool(c.get("is_error")),
-                               "text": _one_line("\n".join(_texts(c.get("content"))), SUMMARY_MAX), "ended": ts}
+                               "text": _one_line(_claude_answer(tur, c), SUMMARY_MAX), "ended": ts}
     if note:
         att = o.get("attachment") if isinstance(o.get("attachment"), dict) else {}
         blob = "\n".join(_texts(content) + _texts(o.get("content")) + _texts(att.get("prompt")))
@@ -2206,6 +2671,20 @@ def _claude_fold(s: dict, raw: bytes) -> None:
         state = _NOTE_STATE.get(str(att.get("status") or ""))
         if att.get("type") == "task_status" and state and isinstance(att.get("taskId"), str):
             s["notes"].setdefault(att["taskId"], {"state": state, "text": "", "ended": ts})
+
+
+_TOOLS_USED = re.compile(r"<tools-used-before-summary>.*?</tools-used-before-summary>", re.S)
+
+
+def _claude_answer(tur: dict, block: dict) -> str:
+    """A subagent's own words: the text of `toolUseResult.content` without the `<tools-used-before-summary>` block,
+    never Claude Code's `[Subagent hand-back]` frame around them; else the tool result's text after that frame."""
+    own = _TOOLS_USED.sub("", "\n".join(_texts(tur.get("content")))).strip()
+    if not own:
+        whole = "\n".join(_texts(block.get("content")))
+        own = whole.split("The report follows:", 1)[-1].split("\nagentId:", 1)[0]
+        own = _TOOLS_USED.sub("", own)
+    return own.replace("```", " ").strip()
 
 
 def _claude_sub_tail(path: Path) -> dict:
@@ -2320,7 +2799,8 @@ class CliRuns:
     """`runs.cli`: CLI agent sessions on this machine that ran sub-runs, as AgentRuns. Claude Code keeps one
     transcript per session in `<claude>/projects/<cwd slug>/<id>.jsonl` (subagents in `<id>/subagents/`), Codex one
     rollout per thread in `<codex>/sessions/YYYY/MM/DD/`, a spawned sub-agent being its own thread whose session
-    meta names its parent. pi, omp and grok keep no sub-run record omher can read; they return no runs."""
+    meta names its parent. OmO keeps one record per subagent in `<omo>/agent/projects/*/senpi-task/tasks/`. pi,
+    omp and grok keep no sub-run record omher can read; they return no runs."""
 
     def __init__(self, homes: dict[str, Path] | None = None, clock=time.time):
         self.homes = {**cli_homes(), **(homes or {})}
@@ -2357,6 +2837,8 @@ class CliRuns:
     def agents(self) -> dict[str, str]:
         out = {"claude": "found" if (self.homes["claude"] / "projects").is_dir() else "not_installed",
                "codex": "found" if (self.homes["codex"] / "sessions").is_dir() else "not_installed"}
+        omo = self.homes.get("omo")
+        out["omo"] = "found" if omo and (omo / "agent" / "projects").is_dir() else "not_installed"
         for name in ("pi", "omp", "grok"):
             out[name] = "no_adapter" if self.homes[name].exists() else "not_installed"
         return out
@@ -2634,6 +3116,89 @@ class CliRuns:
             runs.append(run)
         return runs
 
+    # ---- OmO
+    def omo(self, cwd: str | None, since: float, now: float) -> list[dict]:
+        """OmO's subagents: one record per subagent in `<omo>/agent/projects/<proj>/senpi-task/tasks/st_*.json`
+        (name, task summary, model, status, times, final response), keyed by the session that started them
+        (`root_session_id`, the id omher's OmO session reports). One run per session. OmO keeps a folder's records in
+        that folder instead (`<cwd>/.omo/senpi-task/tasks/st_*.json`) when they are already there, and OmO 5.0 always
+        does; for a session's own folder (`cwd`) those are read as well. Only these records are read, never the
+        subagents' own transcripts (`children/`)."""
+        home = self.homes.get("omo")
+        root = home / "agent" / "projects" if home else None
+        stores: list[Path] = []
+        try:
+            if root is not None and root.is_dir() and not root.is_symlink():
+                stores += [Path(p.path) / "senpi-task" / "tasks" for p in os.scandir(root) if p.is_dir(follow_symlinks=False)]
+            if cwd:
+                dot = Path(cwd) / ".omo"
+                if dot.is_dir() and not dot.is_symlink() and not (dot / "senpi-task").is_symlink():
+                    stores.append(dot / "senpi-task" / "tasks")
+        except OSError:
+            return []
+        files: list[tuple[float, Path]] = []
+        try:
+            for tasks in stores:
+                if not tasks.is_dir() or tasks.is_symlink():
+                    continue
+                for e in os.scandir(tasks):
+                    if _OMO_TASK.match(e.name) and e.is_file(follow_symlinks=False):
+                        m = e.stat().st_mtime
+                        if m >= since:
+                            files.append((m, Path(e.path)))
+        except OSError:
+            return []
+        files.sort(key=lambda x: -x[0])
+        groups: dict[str, list[dict]] = {}
+        for _, p in files[:OMO_TASKS]:
+            rec = self._cached(p, self._json)
+            if not isinstance(rec, dict) or not isinstance(rec.get("root_session_id"), str):
+                continue
+            groups.setdefault(rec["root_session_id"], []).append(rec)
+        runs = []
+        for sid, recs in groups.items():
+            recs.sort(key=lambda r: _iso_ts(r.get("created_at")) or 0.0)
+            nodes = []
+            for r in recs:
+                state = _OMO_STATE.get(str(r.get("status") or ""), "running")
+                started = _iso_ts(r.get("started_at")) or _iso_ts(r.get("created_at"))
+                ended = _iso_ts(r.get("terminal_at"))
+                moved = _iso_ts(r.get("updated_at")) or started or 0.0
+                reason = ""
+                if state == "running" and now - moved > CLI_STALE and ended is None:
+                    state, reason, ended = "failed", "no result", moved
+                elif state == "failed":
+                    reason = _one_line(r.get("error") or r.get("failure") or "failed", 200)
+                label = _one_line(r.get("task_summary") or r.get("description") or r.get("name") or "Subagent", CLI_TITLE)
+                node = _cli_node(str(r.get("task_id") or len(nodes)), label, state, started, ended,
+                                 summary=_one_line(r.get("final_response") or "", SUMMARY_MAX) if state == "done" else "",
+                                 reason=reason)
+                eff = r.get("effective_model") if isinstance(r.get("effective_model"), dict) else {}
+                model = eff.get("model_id") or (r.get("model") if isinstance(r.get("model"), str) else "")
+                if model:
+                    node["model"] = model.rsplit("/", 1)[-1]
+                if isinstance(eff.get("provider"), str) and eff["provider"]:
+                    node["provider"] = eff["provider"]
+                if isinstance(r.get("agent_type"), str) and r["agent_type"]:
+                    node["lane"] = r["agent_type"]
+                node["executor"] = "omo"
+                nodes.append(node)
+            run_cwd = ""
+            spec = recs[0].get("spawn_spec")
+            if isinstance(spec, dict) and isinstance(spec.get("cwd"), str):
+                run_cwd = spec["cwd"]
+            if cwd and run_cwd and _norm(run_cwd) != _norm(cwd):
+                continue
+            state, ended = _run_of(nodes)
+            started = min([n["started"] for n in nodes if n.get("started") is not None] or [0.0])
+            run = {"id": f"omo:{sid}", "kind": "session", "agent": "omo", "owner": {"type": "session", "id": sid},
+                   "title": "OmO session", "cwd": run_cwd, "state": state, "nodes": nodes, "started": started,
+                   "updated": max([_iso_ts(r.get("updated_at")) or 0.0 for r in recs] + [n.get("ended") or 0.0 for n in nodes])}
+            if ended is not None:
+                run["ended"] = ended
+            runs.append(run)
+        return runs
+
     # ---- ops
     def list(self, agent: str | None = None, cwd: str | None = None, since: float | None = None) -> dict:
         now = self.clock()
@@ -2644,6 +3209,8 @@ class CliRuns:
                 runs += self.claude(cwd, since, now)
             if agent in (None, "codex"):
                 runs += self.codex(cwd, since, now)
+            if agent in (None, "omo"):
+                runs += self.omo(cwd, since, now)
             runs.sort(key=lambda r: (r["state"] != "running", -r["updated"]))
             runs = runs[:CLI_RUNS]
             self._last.update({r["id"]: r for r in runs})
@@ -2652,12 +3219,601 @@ class CliRuns:
     def get(self, run_id: str) -> dict:
         agent = run_id.split(":", 1)[0]
         run = self._last.get(run_id)
-        if run is None and agent in ("claude", "codex"):
+        if run is None and agent in ("claude", "codex", "omo"):
             self.list(agent, None, 0.0)
             run = self._last.get(run_id)
         if run is None:
             raise BridgeError("not_found", f"no CLI run {run_id}")
         return {"run": run, "handoffs": {}}
+
+
+# ---------------------------------------------------------------- runs: one node's session as a chat (read-only)
+# `runs.node_session`: what a Hermes subagent, or a Claude Code / Codex session a fanout handed a node to, did, in one
+# agent-neutral shape the UI draws as a chat between the parent (right) and the child (left): the prompt and any later
+# steer as `user` items, the child's own words as `assistant`, each tool call as a `step` (input and result, clipped
+# and masked), and its own children as `child` items that open the same way. Never a reasoning/thinking field.
+# Hermes children come from the bot's OWN state.db (read-only URI); CLI sessions from the CLI homes only (plain files,
+# no symlinks, real path inside the home).
+
+NS_CLIP = 4096             # bytes of one step's input or result sent to the UI
+NS_TEXT = 16000            # chars of one bubble
+NS_ITEMS = 400             # items of one session
+NS_REF = re.compile(r"^(hermes|claude|claude-sub|codex):([A-Za-z0-9_.:/@-]{1,300})$")
+_SECRET = re.compile(r"(sk-|ghp_|gho_|github_pat_|xox[bpas]-|AKIA)[A-Za-z0-9_-]{8,}")
+_HERMES_SID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def mask_secrets(text: str) -> str:
+    """Token-like strings (`sk-…`, `ghp_…`, `xoxb-…`, `AKIA…`) with their body replaced by `•••`."""
+    return _SECRET.sub(lambda m: m.group(1) + "•••", text)
+
+
+def _ns_clip(text, n: int = NS_CLIP) -> str:
+    s = mask_secrets(str(text or ""))
+    b = s.encode("utf-8")
+    if len(b) <= n:
+        return s
+    return b[:n].decode("utf-8", "ignore").rstrip() + f"\n… ({len(b) - n} more bytes)"
+
+
+def _ns_args(raw) -> str:
+    """Tool arguments as pretty JSON when they are JSON, else the text as it came."""
+    if isinstance(raw, (dict, list)):
+        return _ns_clip(json.dumps(raw, indent=2, ensure_ascii=False))
+    try:
+        return _ns_clip(json.dumps(json.loads(raw), indent=2, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return _ns_clip(raw)
+
+
+def _ns_ok(result: str) -> bool:
+    head = result[:400].lower()
+    return not ('"error"' in head and '"error": null' not in head) and not head.startswith("error")
+
+
+def _ns_masked(value):
+    """`value` with every string in it masked (`mask_secrets`) and clipped to one bubble (NS_TEXT)."""
+    if isinstance(value, str):
+        return _ns_clip(value, NS_TEXT)
+    if isinstance(value, dict):
+        return {k: _ns_masked(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_ns_masked(v) for v in value]
+    return value
+
+
+def _ns_finish(kind: str, items: list[dict], **extra) -> dict:
+    """The session dict: its items, plus the brief's flat view of them (prompt, steps, answer, children). Every
+    string in it (title, goals, summaries, prompt, answer, the parent's name…) is masked on the way out."""
+    items = items[:NS_ITEMS]
+    prompt = next((i["text"] for i in items if i["type"] == "user"), "")
+    answer = next((i["text"] for i in reversed(items) if i["type"] == "assistant"), "")
+    steps = [{k: i[k] for k in ("tool", "input", "result", "ok") if k in i} for i in items if i["type"] == "step"]
+    children = [i for i in items if i["type"] == "child"]
+    out = {"kind": kind, "prompt": prompt, "steps": steps, "answer": answer, "children": children, "items": items}
+    out.update({k: v for k, v in extra.items() if v not in (None, "")})
+    return {k: _ns_masked(v) for k, v in out.items()}
+
+
+def _ns_norm(text) -> str:
+    """A prompt as the matcher compares it: dag marks and a fanout unit prompt's `Overall goal: ` lead out, whitespace
+    folded, the first 200 characters."""
+    s = " ".join(DAG_MARK.sub("", str(text or "")).split())
+    return s.removeprefix("Overall goal: ")[:200]
+
+
+# the harness's own preamble in a Codex rollout (AGENTS.md, environment): not what the parent said
+_CODEX_PREAMBLE = ("# AGENTS.md", "<environment_context>", "<user_instructions>", "<permissions", "<INSTRUCTIONS>")
+
+
+NS_FIND_BEFORE = 60        # a CLI session may start this long before the unit's recorded start…
+NS_FIND_AFTER = 15 * 60    # …and this long after it
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        real, top = os.path.realpath(path), os.path.realpath(root)
+        return os.path.commonpath([real, top]) == top and not path.is_symlink() and path.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+class NodeSessions:
+    """Finds and reads the session behind a node (or behind a child ref the UI got from an earlier read)."""
+
+    def __init__(self, homes: dict[str, Path] | None = None, delegations: Delegations | None = None):
+        self.homes = {**cli_homes(), **(homes or {})}
+        self.delegations = delegations or Delegations()
+
+    # ---- Hermes children (the bot's own state.db)
+    @staticmethod
+    def _db(profile_dir: Path):
+        import sqlite3
+        db = profile_dir / "state.db"
+        if not db.is_file():
+            raise BridgeError("not_found", "the bot has no state.db")
+        return sqlite3.connect(ro_uri(db), uri=True, timeout=1.0)
+
+    def hermes_find(self, profile_dir: Path, goal_mark: str | None = None, goal: str | None = None,
+                    since: float | None = None, parent: str | None = None) -> str | None:
+        """The newest subagent session whose prompt carries `goal_mark` (`[dag:run/node]`), else starts with `goal`
+        (started at or after `since`, a minute's grace), optionally under `parent`."""
+        con = self._db(profile_dir)
+        try:
+            q = ("SELECT s.id, s.started_at, (SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user'"
+                 " ORDER BY m.id LIMIT 1) FROM sessions s WHERE s.source = 'subagent'")
+            args: list = []
+            if parent:
+                q += " AND s.parent_session_id = ?"
+                args.append(parent)
+            if since:
+                q += " AND s.started_at >= ?"
+                args.append(since - 60)
+            rows = con.execute(q + " ORDER BY s.started_at DESC LIMIT 2000", args).fetchall()
+        finally:
+            con.close()
+        want = " ".join((goal or "").split())[:120]
+        for sid, _, first in rows:
+            text = str(first or "")
+            if goal_mark and goal_mark in text:
+                return str(sid)
+            if want and not goal_mark and " ".join(DAG_MARK.sub("", text).split()).startswith(want):
+                return str(sid)
+        return None
+
+    def hermes_owned(self, profile_dir: Path, sid: str) -> bool:
+        """True when `sid` is a subagent session whose parent chain (through subagents only) reaches one of the bot's
+        own non-subagent sessions in its state.db: a child of the bot's own runs and delegations. A ref to anything
+        else (a Discord or Slack chat, an orphaned or looping child) is not read."""
+        if not _HERMES_SID.match(sid):
+            return False
+        con = self._db(profile_dir)
+        try:
+            cur, seen = sid, set()
+            while cur and cur not in seen and len(seen) < 32:
+                seen.add(cur)
+                row = con.execute("SELECT source, parent_session_id FROM sessions WHERE id = ?", (cur,)).fetchone()
+                if row is None:
+                    return False
+                if row[0] != "subagent":
+                    return cur != sid
+                cur = row[1]
+            return False
+        finally:
+            con.close()
+
+    def hermes_read(self, profile_dir: Path, sid: str, parent_name: str = "") -> dict:
+        if not _HERMES_SID.match(sid):
+            raise BridgeError("bad_request", "bad session id")
+        con = self._db(profile_dir)
+        try:
+            row = con.execute("SELECT id, parent_session_id, model, billing_provider, started_at, ended_at, title, source"
+                              " FROM sessions WHERE id = ?", (sid,)).fetchone()
+            if row is None:
+                raise BridgeError("not_found", f"no session {sid}")
+            # only these columns: never reasoning / reasoning_content / reasoning_details / codex_reasoning_items
+            msgs = con.execute("SELECT role, content, tool_calls, tool_name, tool_call_id, timestamp FROM messages"
+                               " WHERE session_id = ? ORDER BY id LIMIT 4000", (sid,)).fetchall()
+            kids = con.execute("SELECT s.id, s.model, s.billing_provider, s.started_at, s.ended_at, s.end_reason,"
+                               " (SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id"
+                               " LIMIT 1), (SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'assistant'"
+                               " AND (m.tool_calls IS NULL OR m.tool_calls = '' OR m.tool_calls = '[]') AND m.content != ''"
+                               " ORDER BY m.id DESC LIMIT 1) FROM sessions s WHERE s.parent_session_id = ?"
+                               " ORDER BY s.started_at", (sid,)).fetchall()
+        finally:
+            con.close()
+        results = {str(m[4]): str(m[1] or "") for m in msgs if m[0] == "tool" and m[4]}
+        children = [{"type": "child", "ref": f"hermes:{k[0]}", "kind": "hermes", "model": k[1] or "",
+                     "provider": k[2] or "", "goal": _one_line(mask_secrets(DAG_MARK.sub("", str(k[6] or ""))), 200),
+                     "state": "running" if k[4] is None else ("failed" if k[5] in ("error", "failed") else "done"),
+                     "summary": _one_line(mask_secrets(str(k[7] or "")), 300), "started": k[3], "ended": k[4]}
+                    for k in kids]
+        items: list[dict] = []
+        placed: set[str] = set()
+        for role, content, calls, _, _, ts in msgs:
+            text = str(content or "")
+            if role == "user" and text.strip():
+                items.append({"type": "user", "text": _ns_clip(DAG_MARK.sub("", text).strip(), NS_TEXT), "ts": ts})
+            elif role == "assistant":
+                try:
+                    tcs = json.loads(calls) if calls else []
+                except ValueError:
+                    tcs = []
+                if text.strip():
+                    items.append({"type": "assistant", "text": _ns_clip(text.strip(), NS_TEXT), "ts": ts})
+                for tc in tcs if isinstance(tcs, list) else []:
+                    fn = tc.get("function") if isinstance(tc, dict) else None
+                    if not isinstance(fn, dict):
+                        continue
+                    name = str(fn.get("name") or "tool")
+                    res = results.get(str(tc.get("id") or tc.get("call_id") or ""), "")
+                    items.append({"type": "step", "tool": name, "input": _ns_args(fn.get("arguments")),
+                                  "result": _ns_clip(res), "ok": _ns_ok(res), "ts": ts})
+                    if name == "delegate_task":
+                        for c in children:
+                            if c["ref"] not in placed and (c["started"] or 0) >= (ts or 0) - 5:
+                                goals = str(fn.get("arguments") or "")
+                                if c["goal"][:40] and c["goal"][:40] in " ".join(goals.split()):
+                                    items.append(c)
+                                    placed.add(c["ref"])
+        items += [c for c in children if c["ref"] not in placed]
+        # the answer is the child's last words: a trailing parent acceptance never shows (it is not in this session)
+        return _ns_finish("hermes", items, ref=f"hermes:{sid}", model=row[2] or "", provider=row[3] or "",
+                          parent=parent_name, title=_one_line(mask_secrets(str(row[6] or "")), 120), started=row[4], ended=row[5],
+                          state="running" if row[5] is None else "done")
+
+    # ---- Claude Code
+    def _claude_root(self) -> Path:
+        return self.homes["claude"] / "projects"
+
+    @staticmethod
+    def _claude_items(path: Path, start_cut: bool = False) -> tuple[list[dict], dict]:
+        items: list[dict] = []
+        calls: dict[str, dict] = {}
+        info = {"model": "", "started": None, "ended": None, "cwd": ""}
+        with open(path, "rb") as fh:
+            for raw in fh:
+                try:
+                    o = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(o, dict) or o.get("type") not in ("user", "assistant"):
+                    continue
+                ts = _iso_ts(o.get("timestamp"))
+                info["started"] = info["started"] or ts
+                info["ended"] = ts or info["ended"]
+                info["cwd"] = info["cwd"] or str(o.get("cwd") or "")
+                msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+                content = msg.get("content")
+                if o["type"] == "assistant" and isinstance(msg.get("model"), str):
+                    info["model"] = msg["model"]
+                if isinstance(content, str):
+                    if content.strip() and "<task-notification>" not in content:
+                        items.append({"type": "user" if o["type"] == "user" else "assistant",
+                                      "text": _ns_clip(content.strip(), NS_TEXT), "ts": ts})
+                    continue
+                for part in content if isinstance(content, list) else []:
+                    if not isinstance(part, dict):
+                        continue
+                    kind = part.get("type")
+                    if kind == "text" and str(part.get("text") or "").strip():
+                        items.append({"type": "user" if o["type"] == "user" else "assistant",
+                                      "text": _ns_clip(part["text"].strip(), NS_TEXT), "ts": ts})
+                    elif kind == "tool_use":
+                        step = {"type": "step", "tool": str(part.get("name") or "tool"), "input": _ns_args(part.get("input")),
+                                "result": "", "ok": True, "ts": ts, "_id": str(part.get("id") or "")}
+                        items.append(step)
+                        calls[step["_id"]] = step
+                    elif kind == "tool_result":
+                        step = calls.get(str(part.get("tool_use_id") or ""))
+                        if step is not None:
+                            res = part.get("content")
+                            step["result"] = _ns_clip("\n".join(_texts(res)) if not isinstance(res, str) else res)
+                            step["ok"] = part.get("is_error") is not True
+                    # `thinking` / `redacted_thinking` parts are never read
+        return items, info
+
+    def claude_read(self, path: Path, ref: str, parent_name: str = "") -> dict:
+        if not _inside(path, self._claude_root()):
+            raise BridgeError("not_found", "no such Claude Code session")
+        items, info = self._claude_items(path)
+        # its Agent/Task calls open the subagent transcript Claude Code wrote next to it
+        sub_dir = path.parent / path.stem / "subagents"
+        metas: dict[str, str] = {}
+        if sub_dir.is_dir() and not sub_dir.is_symlink():
+            for f in sub_dir.glob("agent-*.meta.json"):
+                if f.is_symlink():
+                    continue
+                try:
+                    meta = json.loads(f.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if isinstance(meta, dict) and isinstance(meta.get("toolUseId"), str):
+                    metas[meta["toolUseId"]] = f.name[len("agent-"):-len(".meta.json")]
+        out: list[dict] = []
+        for it in items:
+            sid = it.pop("_id", None)
+            out.append(it)
+            if it["type"] == "step" and it["tool"] in _CLAUDE_TOOLS:
+                aid = metas.get(sid or "")
+                try:
+                    goal = json.loads(it["input"]).get("description", "")
+                except (ValueError, AttributeError):
+                    goal = ""
+                if aid:
+                    rel = f"{path.parent.name}/{path.stem}/{aid}"
+                    out.append({"type": "child", "ref": f"claude-sub:{rel}", "kind": "claude", "goal": _one_line(goal, 200),
+                                "summary": _one_line(it["result"], 300), "state": "done" if it["result"] else "running"})
+        return _ns_finish("claude", out, ref=ref, model=info["model"], parent=parent_name, started=info["started"],
+                          ended=info["ended"], cwd=info["cwd"])
+
+    @staticmethod
+    def _claude_head(path: Path) -> tuple[str, float | None]:
+        """A transcript's first user message (as the matcher compares it) and its first timestamp."""
+        first_ts: float | None = None
+        try:
+            with open(path, "rb") as fh:
+                for n, raw in enumerate(fh):
+                    if n > 400:
+                        break
+                    try:
+                        o = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(o, dict) or o.get("type") not in ("user", "assistant"):
+                        continue
+                    first_ts = first_ts or _iso_ts(o.get("timestamp"))
+                    if o["type"] != "user":
+                        continue
+                    msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+                    content = msg.get("content")
+                    parts = content if isinstance(content, list) else []
+                    text = content if isinstance(content, str) else "\n".join(
+                        str(p.get("text") or "") for p in parts if isinstance(p, dict) and p.get("type") == "text")
+                    if text.strip():
+                        return _ns_norm(text), first_ts
+        except OSError:
+            pass
+        return "", first_ts
+
+    @staticmethod
+    def _closest(found: list[tuple[str, float | None, Path]], prompt: str, since: float) -> Path | None:
+        """Of (first prompt, first timestamp, file): those whose prompt matches `prompt` (first 200 characters,
+        whitespace folded) and that started in [since - 1 min, since + 15 min]; the one closest to `since`. None when
+        no prompt is known or nothing matches: never the newest file of the folder."""
+        want = _ns_norm(prompt)
+        if not want or not since:
+            return None
+        hits = [(abs(ts - since), str(p), p) for text, ts, p in found
+                if ts is not None and since - NS_FIND_BEFORE <= ts <= since + NS_FIND_AFTER
+                and text and (text.startswith(want) or want.startswith(text))]
+        return min(hits)[2] if hits else None
+
+    def claude_find(self, worktree: str, since: float, prompt: str = "") -> Path | None:
+        """The Claude Code transcript of exactly that folder whose first user message is the unit's prompt and that
+        started near `since` (see `_closest`)."""
+        d = self._claude_root() / claude_slug(worktree)
+        if not d.is_dir() or d.is_symlink():
+            return None
+        found = [(*self._claude_head(f), f) for f in d.glob("*.jsonl") if _inside(f, self._claude_root())]
+        return self._closest(found, prompt, since)
+
+    # ---- Codex
+    def _codex_root(self) -> Path:
+        return self.homes["codex"] / "sessions"
+
+    def _codex_files(self):
+        root = self._codex_root()
+        if not root.is_dir() or root.is_symlink():
+            return []
+        return [p for p in root.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]/rollout-*.jsonl") if _inside(p, root)]
+
+    @staticmethod
+    def _codex_meta(path: Path) -> dict:
+        try:
+            with open(path, "rb") as fh:
+                o = json.loads(fh.readline())
+        except (OSError, ValueError):
+            return {}
+        pl = o.get("payload") if isinstance(o, dict) and o.get("type") == "session_meta" else None
+        if not isinstance(pl, dict):
+            return {}
+        src = pl.get("source")
+        spawn = (src.get("subagent") or {}).get("thread_spawn") if isinstance(src, dict) else None
+        return {"id": str(pl.get("id") or ""), "cwd": str(pl.get("cwd") or ""),
+                "started": _iso_ts(pl.get("timestamp")) or _iso_ts(o.get("timestamp")),
+                "parent": spawn.get("parent_thread_id") if isinstance(spawn, dict) else None,
+                "start": pl.get("subagent_history_start_ordinal")}
+
+    def codex_find(self, worktree: str = "", since: float = 0.0, thread: str = "", prompt: str = "") -> Path | None:
+        """A Codex rollout by its thread id, or the top-level rollout of exactly that folder whose first user message
+        is the unit's prompt and that started near `since` (see `_closest`)."""
+        want = os.path.realpath(worktree) if worktree else ""
+        found: list[tuple[str, float | None, Path]] = []
+        for p in self._codex_files():
+            m = self._codex_meta(p)
+            if thread:
+                if m.get("id") == thread:
+                    return p
+                continue
+            if m.get("parent") or not m.get("cwd") or os.path.realpath(m["cwd"]) != want:
+                continue
+            found.append((self._codex_first_prompt(p), m.get("started"), p))
+        return None if thread else self._closest(found, prompt, since)
+
+    @staticmethod
+    def _codex_first_prompt(path: Path) -> str:
+        """A rollout's first user message past the harness's own preamble, as the matcher compares it."""
+        try:
+            with open(path, "rb") as fh:
+                for n, raw in enumerate(fh):
+                    if n > 400:
+                        break
+                    try:
+                        o = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(o, dict):
+                        continue
+                    pl = o.get("payload") if isinstance(o.get("payload"), dict) else {}
+                    if o.get("type") != "response_item" or pl.get("type") != "message" or pl.get("role") != "user":
+                        continue
+                    text = "\n".join(_texts(pl.get("content"))).strip()
+                    if text and not text.startswith(_CODEX_PREAMBLE):
+                        return _ns_norm(text)
+        except OSError:
+            pass
+        return ""
+
+    def codex_read(self, path: Path, parent_name: str = "") -> dict:
+        if not _inside(path, self._codex_root()):
+            raise BridgeError("not_found", "no such Codex session")
+        meta = self._codex_meta(path)
+        start = meta.get("start") if isinstance(meta.get("start"), int) else None
+        items: list[dict] = []
+        calls: dict[str, dict] = {}
+        info = {"model": "", "ended": None}
+        with open(path, "rb") as fh:
+            for raw in fh:
+                try:
+                    o = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(o, dict):
+                    continue
+                if start is not None and isinstance(o.get("ordinal"), int) and o["ordinal"] < start:
+                    continue
+                pl = o.get("payload") if isinstance(o.get("payload"), dict) else {}
+                ts = _iso_ts(o.get("timestamp"))
+                typ = pl.get("type")
+                if o.get("type") == "turn_context" and isinstance(pl.get("model"), str):
+                    info["model"] = pl["model"]
+                if o.get("type") == "event_msg" and typ == "task_complete":
+                    info["ended"] = ts
+                if o.get("type") != "response_item":
+                    continue
+                if typ == "message" and pl.get("role") in ("user", "assistant"):
+                    text = "\n".join(_texts(pl.get("content"))).strip()
+                    # the harness's own preamble (AGENTS.md, environment) is not what the parent said
+                    if not text or text.startswith(_CODEX_PREAMBLE):
+                        continue
+                    items.append({"type": pl["role"], "text": _ns_clip(text, NS_TEXT), "ts": ts})
+                elif typ == "agent_message":
+                    text = "\n".join(_texts(pl.get("content"))).strip()
+                    if text:
+                        items.append({"type": "user", "text": _ns_clip(text, NS_TEXT), "ts": ts})
+                elif typ in ("function_call", "custom_tool_call", "local_shell_call"):
+                    step = {"type": "step", "tool": str(pl.get("name") or "shell"),
+                            "input": _ns_args(pl.get("arguments") if "arguments" in pl else pl.get("input") or pl.get("action")),
+                            "result": "", "ok": True, "ts": ts}
+                    items.append(step)
+                    calls[str(pl.get("call_id") or "")] = step
+                elif typ in ("function_call_output", "custom_tool_call_output"):
+                    step = calls.get(str(pl.get("call_id") or ""))
+                    if step is not None:
+                        out = pl.get("output")
+                        text = out if isinstance(out, str) else "\n".join(_texts(out))
+                        step["result"] = _ns_clip(text)
+                        step["ok"] = _ns_ok(text)
+                # `reasoning` items are never read
+        # its spawned sub-agents: threads whose meta names this one as parent
+        tid = meta.get("id") or ""
+        for p in self._codex_files() if tid else []:
+            m = self._codex_meta(p)
+            if m.get("parent") == tid:
+                items.append({"type": "child", "ref": f"codex:{m['id']}", "kind": "codex", "goal": "", "state": "done",
+                              "summary": ""})
+        return _ns_finish("codex", items, ref=f"codex:{tid}", model=info["model"], parent=parent_name,
+                          started=meta.get("started"), ended=info["ended"], cwd=meta.get("cwd") or "")
+
+    # ---- fanout units -> their binding (worktree, start)
+    @staticmethod
+    def fanout_binding(omh_home: Path, run_folder: Path, node: str) -> dict | None:
+        if not run_folder.is_dir() or run_folder.is_symlink() or not DAG_ID.match(node):
+            return None
+        for f in sorted(run_folder.iterdir()):
+            m = re.match(r"^fanout-([0-9a-f]{6,32})-units\.json$", f.name)
+            if not m or f.is_symlink() or not f.is_file():
+                continue
+            try:
+                units = json.loads(f.read_text(encoding="utf-8")).get("units")
+            except (OSError, ValueError, AttributeError):
+                continue
+            unit = next((u for u in units or [] if isinstance(u, dict) and u.get("unit_id") == node), None)
+            if unit is None:
+                continue
+            out = {"owner": str(unit.get("owner") or "")}
+            # every unit prompt of this fanout opens with its goal file's text (`Overall goal: …`)
+            g = run_folder / f"fanout-{m.group(1)}-goal.txt"
+            if g.is_file() and not g.is_symlink():
+                try:
+                    with open(g, encoding="utf-8", errors="replace") as fh:
+                        out["goal"] = fh.read(4000)
+                except OSError:
+                    pass
+            b = omh_home / "runtime" / "runs" / f"fanout-{m.group(1)}-{node}" / "executor_progress" / "binding.json"
+            if b.is_file() and not b.is_symlink():
+                try:
+                    bind = json.loads(b.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    bind = {}
+                aliases = bind.get("correlation_aliases") if isinstance(bind, dict) else None
+                wt = next((a.get("value") for a in aliases or [] if isinstance(a, dict) and a.get("kind") == "worktree"), "")
+                wt = wt or ((bind.get("process") or {}).get("worktree") if isinstance(bind, dict) else "") or ""
+                out["worktree"] = str(wt)
+                out["since"] = _iso_ts(bind.get("created_at")) or 0.0
+                out["executor"] = str(bind.get("executor") or out["owner"])
+            return out
+        return None
+
+    # ---- entry
+    def read(self, bot: dict, runs: "DagRuns", run_id: str | None, node: str | None, ref: str | None,
+             goal: str | None = None, since: float | None = None) -> dict:
+        profile_dir: Path = bot["path"]
+        parent_name = str(bot.get("display_name") or bot["name"])
+        if ref:
+            m = NS_REF.match(ref)
+            if not m or ".." in ref:
+                raise BridgeError("bad_request", "bad session ref")
+            kind, rest = m.group(1), m.group(2)
+            if kind == "hermes":
+                if not self.hermes_owned(profile_dir, rest):
+                    raise BridgeError("not_found", "no such subagent session")
+                return {"session": self.hermes_read(profile_dir, rest)}
+            if kind == "claude-sub":
+                parts = rest.split("/")
+                if len(parts) != 3 or not all(re.match(r"^[A-Za-z0-9_-]{1,200}$", p) for p in parts):
+                    raise BridgeError("bad_request", "bad session ref")
+                path = self._claude_root() / parts[0] / parts[1] / "subagents" / f"agent-{parts[2]}.jsonl"
+                return {"session": self.claude_read(path, ref)}
+            if kind == "claude":
+                parts = rest.split("/")
+                if len(parts) != 2 or not all(re.match(r"^[A-Za-z0-9_-]{1,200}$", p) for p in parts):
+                    raise BridgeError("bad_request", "bad session ref")
+                return {"session": self.claude_read(self._claude_root() / parts[0] / f"{parts[1]}.jsonl", ref)}
+            path = self.codex_find(thread=rest)
+            if path is None:
+                raise BridgeError("not_found", "no such Codex session")
+            return {"session": self.codex_read(path)}
+        if goal:  # a subagent card of the bot's own chat: its `[dag:run/node]` mark, else its goal, and its start
+            mark = DAG_MARK.fullmatch(goal.strip())
+            sid = (self.hermes_find(profile_dir, goal_mark=goal.strip()) if mark
+                   else self.hermes_find(profile_dir, goal_mark=None, goal=goal, since=since))
+            return {"session": self.hermes_read(profile_dir, sid, parent_name) if sid else None}
+        if not run_id or not node:
+            raise BridgeError("bad_request", "need run and node, or ref")
+        got = runs.get(bot["name"], profile_dir, run_id)
+        n = next((x for x in got["run"]["nodes"] if x["id"] == node), None)
+        if n is None:
+            raise BridgeError("not_found", f"no node {node} in {run_id}")
+        started = n.get("started")
+        if run_id.startswith("dag:") or "/" in run_id:
+            name = run_id.rsplit("/", 1)[-1]
+            home = omh_home_for(profile_dir)
+            if n.get("executor"):
+                folder = None
+                for p in (home / "runtime" / "dag").glob(f"*/{name}"):
+                    if p.is_dir() and not p.is_symlink():
+                        folder = p
+                b = self.fanout_binding(home, folder, node) if folder else None
+                ex = (b or {}).get("executor") or n["executor"]
+                wt = (b or {}).get("worktree") or ""
+                cli = "claude" if "claude" in ex else "codex" if "codex" in ex else ex
+                since_at, prompt = (b or {}).get("since") or started or 0.0, (b or {}).get("goal") or ""
+                if wt and cli == "codex":
+                    p = self.codex_find(wt, since_at, prompt=prompt)
+                    if p:
+                        return {"session": self.codex_read(p, parent_name)}
+                if wt and cli == "claude":
+                    p = self.claude_find(wt, since_at, prompt)
+                    if p:
+                        return {"session": self.claude_read(p, f"claude:{p.parent.name}/{p.stem}", parent_name)}
+                return {"session": None, "why": "no_cli_session", "executor": cli}
+            sid = self.hermes_find(profile_dir, goal_mark=f"[dag:{name}/{node}]", since=None)
+            return {"session": self.hermes_read(profile_dir, sid, parent_name) if sid else None}
+        # a delegate_task fan-out's task: its goal and start
+        sid = self.hermes_find(profile_dir, goal=n.get("label") or "", since=started)
+        return {"session": self.hermes_read(profile_dir, sid, parent_name) if sid else None}
 
 
 # ---------------------------------------------------------------- accounts (coding-CLI logins on this computer)
@@ -2973,6 +4129,52 @@ def tool_detail(tool: str, args: dict, context: str, n: int = 160) -> str:
     return line if len(line) <= n else line[: n - 1] + "…"
 
 
+# Hermes' `subagent.*` events of the bot's own turn (tui_gateway/tool_progress.py `_progress_subagent`), as one
+# `subagent` UI event each: who the child is, what it works on, its state, its current step or its result line.
+# Every text is clipped; a child's thinking text is never forwarded, only that it is thinking. Read-only: omher
+# never assigns, steers or stops a subagent.
+SUBAGENT_STATE = {"subagent.spawn_requested": "queued", "subagent.start": "running", "subagent.thinking": "thinking",
+                  "subagent.tool": "running", "subagent.progress": "running"}
+SUBAGENT_DONE = {"completed": "done", "complete": "done", "success": "done", "failed": "failed", "error": "failed",
+                 "timeout": "failed", "stalled": "failed", "interrupted": "cancelled", "cancelled": "cancelled"}
+SUBAGENT_GOAL, SUBAGENT_STEP, SUBAGENT_SUMMARY = 120, 120, 200
+
+
+def subagent_fields(typ: str, p: dict) -> dict | None:
+    """The UI fields of one `subagent.*` event, or None for one omher does not show (`subagent.text`, no id)."""
+    sid = p.get("subagent_id")
+    if typ not in SUBAGENT_STATE and typ != "subagent.complete" or not isinstance(sid, str) or not sid:
+        return None
+    goal = p.get("goal") if isinstance(p.get("goal"), str) else ""
+    mark = DAG_MARK.search(goal)
+    out: dict = {"id": _one_line(sid, 64), "index": p["task_index"] if isinstance(p.get("task_index"), int) else 0,
+                 "count": p["task_count"] if isinstance(p.get("task_count"), int) else 1,
+                 "goal": _one_line(DAG_MARK.sub("", goal), SUBAGENT_GOAL)}
+    if mark:
+        out["dag"] = {"run": mark.group(1), "node": mark.group(2)}
+    for key, dst, n in (("delegation_id", "delegation", 64), ("model", "model", 80)):
+        if isinstance(p.get(key), str) and p[key]:
+            out[dst] = _one_line(p[key], n)
+    if typ == "subagent.complete":
+        out["state"] = SUBAGENT_DONE.get(str(p.get("status") or "completed"), "done")
+        text = p.get("summary") or p.get("text")
+        if isinstance(text, str) and text.strip():
+            out["summary"] = _one_line(text, SUBAGENT_SUMMARY)
+        if isinstance(p.get("duration_seconds"), (int, float)) and not isinstance(p.get("duration_seconds"), bool):
+            out["seconds"] = round(float(p["duration_seconds"]), 1)
+        return out
+    out["state"] = SUBAGENT_STATE[typ]
+    if typ == "subagent.tool":
+        if isinstance(p.get("tool_name"), str) and p["tool_name"]:
+            out["tool"] = _one_line(p["tool_name"], 40)
+        step = p.get("tool_preview") or p.get("text")
+        if isinstance(step, str) and step.strip():
+            out["step"] = _one_line(step, SUBAGENT_STEP)
+    elif typ == "subagent.progress" and isinstance(p.get("text"), str) and p["text"].strip():
+        out["step"] = _one_line(p["text"].lstrip("🔀 "), SUBAGENT_STEP)
+    return out
+
+
 def dag_parts(args: dict) -> list[dict]:
     """The `[dag:<run>/<node>]` parts a delegate_task call hands out (its `goal` or each task's), in order."""
     goals = [args.get("goal")] + [t.get("goal") for t in args.get("tasks") or [] if isinstance(t, dict)]
@@ -2989,6 +4191,24 @@ def read_origins(profile_dir: Path, ids: list[str]) -> dict[str, dict]:
     """Where each session lives (platform, channel name, ids) from the profile's own state.db, opened
     read-only. `session.list` carries no origin, and without it a session cannot link back to its thread."""
     return {sid: v["origin"] for sid, v in read_session_facts(profile_dir, ids).items() if "origin" in v}
+
+
+def read_session_cwds(profile_dir: Path, ids: list[str]) -> dict[str, str]:
+    """Per session: the folder Hermes saved it with (`sessions.cwd`), from the profile's state.db opened read-only;
+    sessions without one (or a state.db without the column) are left out. Nothing is written."""
+    import sqlite3
+    db = profile_dir / "state.db"
+    if not ids or not db.is_file():
+        return {}
+    try:
+        con = sqlite3.connect(ro_uri(db), uri=True, timeout=1.0)
+        try:
+            rows = con.execute(f"SELECT id, cwd FROM sessions WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return {}
+    return {str(sid): str(cwd) for sid, cwd in rows if isinstance(cwd, str) and cwd}
 
 
 def read_session_facts(profile_dir: Path, ids: list[str]) -> dict[str, dict]:
@@ -3230,12 +4450,41 @@ def _row_text(row: dict) -> str:
     return ""
 
 
-def chat_messages(rows) -> list[dict]:
+def _turn_answers(rows, running: bool = False) -> set[int]:
+    """The index of each turn's answer: its last assistant row with text. Hermes stores the commentary it writes
+    beside its tool calls ("Now I'll run the tests") as assistant rows of their own; the live chat never shows them
+    as bubbles (the activity line stands for that work), so a reopened chat does not either: one bubble per turn.
+    A turn still `running` has no answer yet: its rows so far are all commentary."""
+    keep: set[int] = set()
+    last = None
+    for i, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            continue
+        if row.get("role") == "user":
+            if last is not None:
+                keep.add(last)
+            last = None
+        elif row.get("role") == "assistant" and row.get("display_kind") != "hidden" and _row_text(row):
+            last = i
+    if last is not None and not running:
+        keep.add(last)
+    return keep
+
+
+def chat_messages(rows, watch_names: set[str] | frozenset[str] = frozenset(), running: bool = False,
+                  main: bool = False, *, limit=MAX_OPEN_MESSAGES) -> list[dict]:
+    """`watch_names`: the channel watches delivering into this chat; their delivered row is hidden and the answer
+    after it tagged `watch`. Any other automation's row stays a normal row. `running`: see `_turn_answers`. ``main``:
+    the bot's main chat, whose answers may hold ```omher-thread``` blocks (shown without them)."""
     out = []
+    answers = _turn_answers(rows, running)
+    watch = None  # an automation's delivered result: its inbound row is not shown, the answer after it carries `watch`
     for i, row in enumerate(rows or []):
         if not isinstance(row, dict) or row.get("role") not in ("user", "assistant"):
             continue
         if row.get("display_kind") == "hidden":
+            continue
+        if row["role"] == "assistant" and i not in answers:
             continue
         text = _row_text(row)
         if not text:
@@ -3243,13 +4492,345 @@ def chat_messages(rows) -> list[dict]:
         rid = row.get("row_id")
         reply = None
         if row["role"] == "user":
-            text, reply = split_reply_block(text)
+            name = watch_of(text) if row.get("display_kind") in (None, "internal_notification") else None
+            watch = {"name": name, "ts": float(row.get("timestamp") or 0.0)} if name in watch_names else None
+            if watch:
+                continue
+            text, reply = split_reply_block(split_peer_hint(split_thread_hint(text)))
+        elif main and "omher-thread" in text:
+            text = split_blocks(text)[2]
+            if not text:
+                continue
         m = {"id": str(rid) if rid is not None else f"m{i}", "role": row["role"], "text": text,
              "ts": float(row.get("timestamp") or 0.0)}
+        if row.get("truncated") is True:
+            m["truncated"] = True
         if reply:
             m["reply_to"] = reply
+        if watch and row["role"] == "assistant":
+            m["watch"], watch = watch, None
         out.append(m)
-    return out[-MAX_OPEN_MESSAGES:]
+    return out if limit is None else out[-limit:]
+
+
+# ---------------------------------------------------------------- SSH peers (BOUNDARY rule 31)
+# A peer is another computer's omher bridge, reached through a loopback port the desktop shell forwards over the
+# person's own `ssh`. This bridge only opens a WebSocket client to that port: it merges the peer's bots into
+# `bots.list` as `<peer>:<name>` (with a `host` field), forwards each bot-scoped op with the bare name and passes the
+# peer's events back under the namespaced name. Ops that need this computer's folders or programs are refused.
+
+PEER_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+PEER_HOST = re.compile(r"(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,31}@)?[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+PEER_URL = re.compile(r"ws://127\.0\.0\.1:[0-9]{1,5}/\?token=[0-9a-f]{32}")
+PEER_BOT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")  # a remote profile name (no `:`, so the key splits once)
+PEER_CALL_TIMEOUT = 240.0
+PEER_LIST_TIMEOUT = 5.0
+PEER_OPEN_TIMEOUT = 15.0
+# Bot-scoped ops a peer's bot takes: sent to the peer with the bare name, its answer passed back as it came.
+PEER_FORWARD = frozenset({
+    "chat.open", "chat.history", "chat.send", "chat.interrupt", "chat.steer", "approval.respond", "clarify.respond", "chat.attach", "chat.set_model",
+    "models.options", "bots.ready", "bots.rename", "bots.avatar", "bots.set_avatar", "bots.info", "skills.list",
+    "links.places", "elsewhere.list", "elsewhere.peek", "routines.list", "runs.list", "runs.get", "runs.prs",
+    "runs.node_session",
+    "panel.terminal", "panel.worktrees", "panel.diff", "media.read", "automations.add", "automations.pause",
+    "automations.resume", "automations.remove", "plugins.list", "plugins.catalog", "plugins.inspect",
+    "plugins.install", "plugins.toggle", "plugins.update", "plugins.remove", "plugins.reload",
+})
+# Ops that need this computer: refused for a peer's bot, with the reason the person reads.
+PEER_REFUSED = {
+    "folder.open": "Folder chats run in a folder on this computer; {label}'s bots run on another one.",
+    "folder.close": "Folder chats run in a folder on this computer; {label}'s bots run on another one.",
+    "bots.restart": "omher does not restart Hermes on another computer. Restart it on {label} itself.",
+}
+
+
+class PeerLink:
+    """One peer: a WebSocket client to its bridge through the forwarded loopback port."""
+
+    def __init__(self, peer: str, label: str, host: str, url: str):
+        self.peer, self.label, self.host, self.url = peer, label, host, url
+        self.ws = None
+        self.reader: asyncio.Task | None = None
+        self.pending: dict[str, asyncio.Future] = {}
+        self.seq = 0
+        self.connected = False
+        self.hello: dict = {}
+        self.rows: list[dict] = []      # the peer's bots.list rows, bare names
+        self.running: set[str] = set()  # bare names whose main-chat turn runs now
+        self.on_event = None
+        self.on_lost = None
+
+    @property
+    def names(self) -> set[str]:
+        return {r["name"] for r in self.rows}
+
+    async def open(self) -> None:
+        from websockets.asyncio.client import connect
+        try:
+            dial = connect(self.url, proxy=None, max_size=UI_FRAME_MAX, open_timeout=10)
+        except TypeError:  # websockets before 15 has no proxy setting
+            dial = connect(self.url, max_size=UI_FRAME_MAX, open_timeout=10)
+        try:
+            self.ws = await asyncio.wait_for(dial, PEER_OPEN_TIMEOUT)
+        except Exception as e:
+            raise BridgeError("peer_unreachable", f"could not reach the bridge on {self.label}: {str(e) or type(e).__name__}")
+        self.connected = True
+        self.reader = asyncio.ensure_future(self._read())
+
+    async def _read(self) -> None:
+        try:
+            async for raw in self.ws:
+                try:
+                    f = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(f, dict):
+                    continue
+                if isinstance(f.get("event"), str):
+                    if self.on_event is not None:
+                        with contextlib.suppress(Exception):
+                            await self.on_event(self, f)
+                elif isinstance(f.get("id"), str):
+                    fut = self.pending.pop(f["id"], None)
+                    if fut is not None and not fut.done():
+                        fut.set_result(f)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        finally:
+            await self._lost()
+
+    async def _lost(self) -> None:
+        if not self.connected:
+            return
+        self.connected = False
+        for fut in list(self.pending.values()):
+            if not fut.done():
+                fut.set_exception(BridgeError("bot_offline", f"lost the link to {self.label}"))
+        self.pending.clear()
+        if self.on_lost is not None:
+            with contextlib.suppress(Exception):
+                await self.on_lost(self)
+
+    async def call(self, op: str, params: dict, timeout: float = PEER_CALL_TIMEOUT):
+        if not self.connected or self.ws is None:
+            raise BridgeError("bot_offline", f"{self.label} is not connected")
+        self.seq += 1
+        rid = f"p{self.seq}"
+        fut = asyncio.get_running_loop().create_future()
+        self.pending[rid] = fut
+        try:
+            await self.ws.send(json.dumps({**params, "id": rid, "op": op}, ensure_ascii=False))
+            f = await asyncio.wait_for(fut, timeout)
+        except BridgeError:
+            raise
+        except (asyncio.TimeoutError, TimeoutError):
+            raise BridgeError("timeout", f"{self.label} did not answer in time")
+        except Exception as e:
+            raise BridgeError("bot_offline", f"lost the link to {self.label}: {str(e) or type(e).__name__}")
+        finally:
+            self.pending.pop(rid, None)
+        if f.get("ok"):
+            return f.get("result")
+        err = f.get("error") if isinstance(f.get("error"), dict) else {}
+        raise BridgeError(str(err.get("code") or "peer_error"), str(err.get("message") or "request failed"))
+
+    async def close(self) -> None:
+        self.on_lost = None
+        self.connected = False
+        if self.ws is not None:
+            with contextlib.suppress(Exception):
+                await self.ws.close()
+        if self.reader is not None and self.reader is not asyncio.current_task():
+            self.reader.cancel()
+            with contextlib.suppress(BaseException):
+                await self.reader
+
+
+def peer_rows(rows) -> list[dict]:
+    """A peer's bots.list rows that omher can address (a name that splits once), each with the fields the UI reads."""
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict) or not isinstance(r.get("name"), str) or not PEER_BOT.fullmatch(r["name"]):
+            continue
+        out.append({"name": r["name"], "display_name": str(r.get("display_name") or r["name"]),
+                    "is_default": bool(r.get("is_default")), "model": str(r.get("model") or ""),
+                    "provider": str(r.get("provider") or ""), "description": str(r.get("description") or ""),
+                    "status": str(r.get("status") or "offline"), "running": bool(r.get("running")),
+                    "avatar_rev": r.get("avatar_rev") if isinstance(r.get("avatar_rev"), int) else None})
+    return out
+
+
+# A turn that asks a bot to connect another computer gets one short note, the way a reply target does: the bot then
+# answers with an `omher-peer` block, which omher turns into a Connect over SSH card. Nothing connects by itself.
+_PEER_ASK = re.compile(
+    r"(?<![A-Za-z])ssh(?![A-Za-z])|원격|다른\s*(?:컴퓨터|맥|머신|서버|pc)|맥\s*미니|mac\s*mini|remote\s+(?:machine|computer|host|server|hermes|bot)"
+    r"|another\s+(?:computer|machine|mac|server)|other\s+(?:computer|machine)|リモート|別の(?:パソコン|マシン|コンピュータ)"
+    r"|远程|另一台|其他(?:电脑|机器)",
+    re.IGNORECASE)
+_PEER_BOT_WORD = re.compile(r"hermes|헤르메스|ヘルメス|赫尔墨斯|\bbots?\b|봇|ボット|机器人", re.IGNORECASE)
+_PEER_JOIN_WORD = re.compile(r"붙|연결|추가|attach|connect|hook\s*up|\badd\b|link|接続|追加|连接|添加|接入", re.IGNORECASE)
+PEER_HINT = ("[omher] To connect a Hermes on another computer to this app over SSH, reply with one fenced block "
+             "```omher-peer {\"host\": \"<ssh config alias or user@host>\", \"label\": \"<short name>\"}``` "
+             "(optional \"port\"). omher shows a Connect over SSH card and connects only when the user presses Connect; "
+             "it uses key login only. If you do not know the host, ask.")
+_PEER_HINT_TAIL = re.compile(r"\n*" + re.escape(PEER_HINT) + r"\s*$")
+
+
+def peer_hint_wanted(text: str) -> bool:
+    """Whether a message asks to connect a bot or Hermes on another computer (the note is added only then)."""
+    if not isinstance(text, str) or "omher-peer" in text:
+        return False
+    if _PEER_ASK.search(text) and (_PEER_BOT_WORD.search(text) or _PEER_JOIN_WORD.search(text)):
+        return True
+    return False
+
+
+def split_peer_hint(text: str) -> str:
+    """A user row sent with the peer note, back as what the person typed."""
+    m = _PEER_HINT_TAIL.search(text or "")
+    return text[: m.start()].rstrip() if m else text
+
+
+def thread_name(title: str) -> str:
+    """A thread's Hermes title as the sidebar shows it: without the `omher · ` prefix; "" for the placeholder a
+    thread carries until its first message names it."""
+    name = title[len(THREAD_PREFIX):] if isinstance(title, str) and title.startswith(THREAD_PREFIX) else str(title or "")
+    name = name.strip()
+    return "" if _THREAD_PLACEHOLDER.fullmatch(name) else name
+
+
+# ---------------------------------------------------------------- the bot opens threads itself (`split`)
+# On each main-chat turn of an app that shows threads, the bridge appends one short note: the bot's open threads and
+# two rules. The bot may answer a many-part request with ```omher-thread``` blocks (omher opens a thread per block and
+# sends its task there) or a message that continues a thread with one ```omher-thread-route``` block (omher only asks
+# the person; nothing moves without their click). The note never shows back in the timeline.
+
+THREAD_HINT_HEAD = "[omher] Open threads:"
+THREAD_HINT_SPLIT = ("If this request has several independent parts or is long work, reply with one fenced block per "
+                     "part, ```omher-thread {\"title\": \"...\", \"task\": \"...\"}``` (max 3), and a one-line note; "
+                     "omher opens a thread for each. Answer simple questions directly, with no block.")
+THREAD_HINT_ROUTE = ("If this message continues an open thread, reply only ```omher-thread-route {\"thread\": \"<id>\"}``` "
+                     "and one sentence; omher asks the user before moving it.")
+THREAD_HINT_MAX = 900  # characters of the whole note
+THREAD_HINT_ROWS = 8
+THREAD_HINT_LAST = 80
+SPLIT_MAX = 3  # omher-thread blocks acted on per turn; the 4th and later are dropped
+SPLIT_TITLE = 80
+SPLIT_TASK = 4000
+_SPLIT_FENCE = re.compile(r"^( {0,3})(`{3,}|~{3,})[ \t]*([^\s`]*)[ \t]*(.*?)\s*$")
+_SPLIT_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
+_SPLIT_INLINE = re.compile(r"^ {0,3}(`{3,})(omher-thread|omher-thread-route)[ \t]+(\{.*\})[ \t]*\1[ \t]*$")
+SPLIT_KINDS = ("omher-thread", "omher-thread-route")
+
+
+def thread_hint(rows: list[dict]) -> str:
+    """The note on a main-chat turn: up to 8 open threads (newest first: id, title, last line) and the two rules,
+    under THREAD_HINT_MAX characters (last lines shortened, then the oldest rows dropped, until it fits)."""
+    rows = rows[:THREAD_HINT_ROWS]
+    if not rows:
+        return f"{THREAD_HINT_HEAD} none.\n{THREAD_HINT_SPLIT}"
+    last_n = THREAD_HINT_LAST
+    while True:
+        lines = []
+        for r in rows:
+            line = f"{r['thread']} \"{_one_line(r.get('title') or '', 40) or 'untitled'}\""
+            last = _one_line(r.get("last") or "", last_n) if last_n > 0 else ""
+            lines.append(f"{line} — {last}" if last else line)
+        note = f"{THREAD_HINT_HEAD}\n" + "\n".join(lines) + f"\n{THREAD_HINT_SPLIT}\n{THREAD_HINT_ROUTE}"
+        if len(note) < THREAD_HINT_MAX or (last_n <= 0 and len(rows) <= 1):
+            return note
+        if last_n > 0:
+            last_n = 0 if last_n <= 20 else last_n - 20
+        else:
+            rows = rows[:-1]
+
+
+def split_thread_hint(text: str) -> str:
+    """A user row sent with the threads note, back as what the person typed (the note is always last)."""
+    if not isinstance(text, str):
+        return text
+    at = text.rfind(THREAD_HINT_HEAD)
+    if at < 0:
+        return text
+    tail = text[at:].rstrip()
+    if not (tail.endswith(THREAD_HINT_SPLIT) or tail.endswith(THREAD_HINT_ROUTE)):
+        return text
+    return text[:at].rstrip()
+
+
+def _split_block(kind: str, body: str) -> dict | None:
+    """One block's JSON checked strictly: exactly the keys of its kind, strings, sizes within bounds."""
+    try:
+        obj = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    if kind == "omher-thread":
+        if set(obj) != {"title", "task"} or not all(isinstance(obj[k], str) for k in obj):
+            return None
+        title, task = obj["title"].strip(), obj["task"].strip()
+        if not title or len(title) > SPLIT_TITLE or "\n" in title or not task or len(task) > SPLIT_TASK:
+            return None
+        return {"title": title, "task": task}
+    if set(obj) != {"thread"} or not isinstance(obj["thread"], str) or not obj["thread"].strip():
+        return None
+    return {"thread": obj["thread"].strip()}
+
+
+def split_blocks(text: str) -> tuple[list[dict], dict | None, str]:
+    """The ```omher-thread``` / ```omher-thread-route``` blocks of a final answer, strictly: only top-level fenced
+    blocks count (not in a `>` quote, not inside another fence), each with valid JSON. Returns (up to SPLIT_MAX
+    thread blocks, the first route block or None, the text without any top-level block of those kinds)."""
+    if not isinstance(text, str) or "omher-thread" not in text:
+        return [], None, text if isinstance(text, str) else ""
+    lines = text.split("\n")
+    keep: list[str] = []
+    creates: list[dict] = []
+    route = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _SPLIT_INLINE.match(line)
+        if m:
+            block = _split_block(m.group(2), m.group(3))
+            if block and m.group(2) == "omher-thread":
+                creates.append(block)
+            elif block and route is None:
+                route = block
+            i += 1
+            continue
+        m = _SPLIT_FENCE.match(line)
+        if not m or line.lstrip().startswith(">"):
+            keep.append(line)
+            i += 1
+            continue
+        fence, info, rest = m.group(2), m.group(3), m.group(4)
+        if fence[0] == "`" and "`" in rest:  # an inline code span, not a fence
+            keep.append(line)
+            i += 1
+            continue
+        # a fence opens: find its close (same character, at least as long, nothing after it)
+        j = i + 1
+        while j < len(lines):
+            c = _SPLIT_CLOSE.match(lines[j])
+            if c and c.group(1)[0] == fence[0] and len(c.group(1)) >= len(fence):
+                break
+            j += 1
+        body = lines[i + 1:j]
+        if info in SPLIT_KINDS and not rest:
+            block = _split_block(info, "\n".join(body)) if j < len(lines) else None
+            if block and info == "omher-thread":
+                creates.append(block)
+            elif block and route is None:
+                route = block
+        else:
+            keep.extend(lines[i:j + 1])
+        i = j + 1
+    shown = re.sub(r"\n{3,}", "\n\n", "\n".join(keep)).strip()
+    return creates[:SPLIT_MAX], route, shown
 
 
 # ---------------------------------------------------------------- one Hermes gateway connection
@@ -3257,17 +4838,24 @@ def chat_messages(rows) -> list[dict]:
 class FolderChat:
     """A Hermes chat this bridge created in a folder the person picked (SESSIONS `+` > oh-my-hermes)."""
 
-    def __init__(self, fid: str, cwd: str, runtime_id: str, stored_id: str):
+    def __init__(self, fid: str, cwd: str, runtime_id: str, stored_id: str, subscription_id: str = "",
+                 kind: str = "folder", title: str = ""):
         self.id = fid
+        self.kind = kind  # "folder" (SESSIONS > oh-my-hermes) or "thread" (a thread under the bot, `thread.*`)
+        self.title = title  # a thread's name without the prefix; "" until its first message names it
+        self.started = time.time()
         self.cwd = cwd
         self.runtime_id = runtime_id
         self.stored_id = stored_id
+        self.subscription_id = subscription_id  # from session.create: what session.detach closes
         self.generation = None
         self.in_turn = False
         self.last_thinking = -1e9
         self.prompts: dict[str, int | None] = {}
         self.asked: dict[str, tuple[float, float | None]] = {}  # open prompt_id -> (asked at, gateway timeout s)
         self.batches: dict[str, list[str]] = {}  # open batch clarify request id -> question ids, in order
+        self.last = ""  # a thread's latest answer, its last line (the threads note on main-chat turns quotes it)
+        self.last_at = 0.0
 
     @property
     def ids(self) -> set[str]:
@@ -3287,6 +4875,7 @@ class Conn:
         self.lock = asyncio.Lock()
         self.failed_at = 0.0
         self.failed_msg = ""
+        self.failed_code = "bot_offline"
         self.main_id: str | None = None        # runtime id of the main chat
         self.main_stored: str | None = None
         self.generation = None
@@ -3295,10 +4884,19 @@ class Conn:
         self.last_elsewhere_emit = -1e9
         self.elsewhere_sig = None
         self.prompts: dict[str, int | None] = {}  # open prompt_id -> execution_generation
-        self.folders: dict[str, FolderChat] = {}  # folder chats this bridge created, by our own id
+        self.folders: dict[str, FolderChat] = {}  # folder chats and threads this bridge created or listed, by id
+        self.threads: dict[str, dict] = {}  # threads `thread.list` found (stored id -> row): what `thread.open` takes
+        self.threads_shown = False  # an app that shows threads read them: main-chat turns carry the threads note
+        self.split_done: set[str] = set()  # answers whose thread blocks were acted on (never twice)
         self.asked: dict[str, tuple[float, float | None]] = {}  # open prompt_id -> (asked at, gateway timeout s)
         self.batches: dict[str, list[str]] = {}  # open batch clarify request id -> question ids, in order
         self.clarify_batch: bool | None = None  # the gateway asks a multi-question clarify as one request
+        self.model_confirmation: dict | None = None  # one exact model selection and its original revision fence
+        self.transcript_paging: bool | None = None
+        self.transcript_scope: str | None = None
+        self.history_cache: list[dict] = []
+        self.history_token = ""
+        self.watch_names: set[str] = set()  # names of the channel watches (collector jobs) that deliver into this Bot Chat
 
     @property
     def connected(self) -> bool:
@@ -3323,14 +4921,17 @@ class Bridge:
         self.eager = eager
         self.clock = clock
         self.poll_s = poll_s
+        self.performance = ReplyTimings(clock)
         self.elsewhere_poll_s = elsewhere_poll_s
         self.conns: dict[str, Conn] = {}
         self.clients: set = set()
         self.server = None
         self.port = 0
-        self._env_lock = asyncio.Lock()
+        self._create_lock = asyncio.Lock()  # serialize profile-name reservation across app connections
         self._tasks: set[asyncio.Task] = set()
         self._routine_state: dict[str, dict] = {}
+        self._bot_chat_jobs: dict[str, list[tuple[str, str, bool]]] = {}  # profile -> (bot-chat target, job, is watch)
+        self._watch_tried: dict[str, float] = {}  # bot -> clock of the last attach try for its watch results
         self._routine_changes: list[tuple[str, str, dict]] = []  # routines.update / routine.added, queued by a poll
         self._plugin_state: dict[str, set[str]] = {}  # plugin folder names per bot at the last look
         # What omher itself just added: never announced back to the chat as something the bot did.
@@ -3338,19 +4939,24 @@ class Bridge:
         self._own_plugins: set[tuple[str, str]] = set()
         self.ops = {
             "hello": self.op_hello, "bots.list": self.op_bots_list, "chat.open": self.op_chat_open,
-            "chat.send": self.op_chat_send, "chat.interrupt": self.op_chat_interrupt,
+            "chat.history": self.op_chat_history,
+            "performance.read": self.op_performance_read,
+            "chat.send": self.op_chat_send, "chat.interrupt": self.op_chat_interrupt, "chat.steer": self.op_chat_steer,
             "approval.respond": self.op_approval_respond, "clarify.respond": self.op_clarify_respond,
             "elsewhere.list": self.op_elsewhere_list, "elsewhere.peek": self.op_elsewhere_peek,
             "routines.list": self.op_routines_list, "models.options": self.op_models_options,
-            "chat.set_model": self.op_set_model,
+            "chat.set_model": self.op_set_model, "bots.ready": self.op_bots_ready,
+            "bots.create": self.op_bots_create,
             "bots.rename": self.op_bots_rename, "bots.avatar": self.op_bots_avatar,
             "bots.set_avatar": self.op_bots_set_avatar, "bots.info": self.op_bots_info,
             "skills.list": self.op_skills_list, "links.places": self.op_links_places,
             "folder.open": self.op_folder_open, "folder.close": self.op_folder_close,
+            "thread.create": self.op_thread_create, "thread.list": self.op_thread_list,
+            "thread.open": self.op_thread_open, "thread.remove": self.op_thread_remove,
             "panel.terminal": self.op_panel_terminal, "panel.worktrees": self.op_panel_worktrees,
             "panel.diff": self.op_panel_diff, "media.read": self.op_media_read,
             "chat.attach": self.op_chat_attach, "runs.list": self.op_runs_list, "runs.get": self.op_runs_get,
-            "runs.cli": self.op_runs_cli, "runs.prs": self.op_runs_prs, "cli.title": self.op_cli_title,
+            "runs.cli": self.op_runs_cli, "runs.prs": self.op_runs_prs, "runs.node_session": self.op_runs_node_session, "cli.title": self.op_cli_title,
             "usage.read": self.op_usage_read,
             "accounts.list": self.op_accounts_list, "accounts.add": self.op_accounts_add,
             "accounts.remove": self.op_accounts_remove, "accounts.set_active": self.op_accounts_set_active,
@@ -3361,11 +4967,18 @@ class Bridge:
             "plugins.list": self.op_plugins_list, "plugins.catalog": self.op_plugins_catalog,
             "plugins.inspect": self.op_plugins_inspect, "plugins.install": self.op_plugins_install,
             "plugins.toggle": self.op_plugins_toggle, "plugins.update": self.op_plugins_update,
-            "plugins.remove": self.op_plugins_remove,
+            "plugins.remove": self.op_plugins_remove, "plugins.reload": self.op_plugins_reload,
+            "bots.restart": self.op_bots_restart, "bots.restart_scope": self.op_bots_restart_scope,
+            "peers.probe": self.op_peers_probe, "peers.attach": self.op_peers_attach, "peers.detach": self.op_peers_detach,
         }
+        self.peers: dict[str, PeerLink] = {}
+        self._peers_seen: set[str] = set()  # peer ids attached before: a later attach is the same bots coming back
         self.announce_media = False  # amain: tell the app (stdout) which files it may open
+        self._restarting: set[str] = set()      # bots whose restart command runs now
+        self._refused: dict[str, float] = {}     # bot -> when Hermes last refused its restart (live work)
         self.runs = DagRuns()
         self.cli = CliRuns()
+        self.node_sessions = NodeSessions(delegations=self.runs.delegations)
         self.prs = PrStates()
 
     # ------------------------------------------------------------ lifecycle
@@ -3397,6 +5010,9 @@ class Bridge:
                 await t
         for conn in list(self.conns.values()):
             await self._drop(conn, emit=False)
+        for link in list(self.peers.values()):
+            await link.close()
+        self.peers.clear()
 
     def _spawn(self, coro) -> asyncio.Task:
         t = asyncio.ensure_future(coro)
@@ -3449,6 +5065,8 @@ class Bridge:
             fn = self.ops.get(frame["op"])
             if fn is None:
                 raise BridgeError("unknown_op", f"no such op: {frame['op']}")
+            if isinstance(frame.get("bot"), str) and ":" in frame["bot"]:
+                fn = self._peer_op
             out = await fn(frame)
             after = None
             if isinstance(out, Reply):
@@ -3479,10 +5097,41 @@ class Bridge:
     # ------------------------------------------------------------ connections
 
     async def _default_connect(self, stack: AsyncExitStack, home: Path):
+        import inspect
         from hermes_cli.gateway_client import connect_gateway
-        async with self._env_lock:  # connect_gateway reads HERMES_HOME when it is entered
-            os.environ["HERMES_HOME"] = str(home)
-            return await stack.enter_async_context(connect_gateway())
+        from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint, ensure_gateway_runtime
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        # An owner still starting must stay pending, without another start request or a
+        # minute-long ensure thread behind a process-wide environment lock. Explicit
+        # deadlines also prevent cancelled attempts leaving adaptive ensure threads alive.
+        # This optional official capability separates local-session readiness from messaging
+        # startup. Older Hermes versions keep their normal gate; never patch their runtime.
+        if not hasattr(self, "_runtime_readiness_options"):
+            supported = all("readiness" in inspect.signature(fn).parameters
+                            for fn in (discover_gateway_endpoint, ensure_gateway_runtime))
+            self._runtime_readiness_options = {"readiness": "session"} if supported else {}
+        selection = self._runtime_readiness_options
+        runtime = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=2.0, **selection)
+        if runtime.state == "absent":
+            runtime = await asyncio.to_thread(ensure_gateway_runtime, home,
+                                             timeout=START_OWNER_TIMEOUT, idle_exit=True, **selection)
+        if not attachable(runtime):
+            if runtime.state == "starting":
+                raise BridgeError("gateway_starting", "Hermes is starting. Awaken Bot will reconnect automatically.")
+            reason = runtime.reason_code or "not_ready"
+            transient = runtime.state in {"absent", "draining"} or reason in {"control_timeout", "runtime_start_failed"}
+            code = "bot_offline" if transient else "gateway_unavailable"
+            detail = f" {runtime.detail}" if getattr(runtime, "detail", None) else ""
+            raise BridgeError(code, f"Hermes is not ready ({runtime.state}: {reason}).{detail}")
+
+        # The endpoint and context-local home bind the bootstrap ticket to this bot.
+        # No shared environment mutation: another profile can connect independently.
+        scope = set_hermes_home_override(home)
+        try:
+            return await stack.enter_async_context(connect_gateway(endpoint=runtime.endpoint))
+        finally:
+            reset_hermes_home_override(scope)
 
     def _bot(self, name) -> dict:
         if not isinstance(name, str) or not name:
@@ -3504,7 +5153,7 @@ class Bridge:
             if conn.connected:
                 return conn
             if self.clock() - conn.failed_at < OFFLINE_COOLDOWN and conn.failed_msg:
-                raise BridgeError("bot_offline", conn.failed_msg)
+                raise BridgeError(conn.failed_code, conn.failed_msg)
             conn.connecting = True
             stack = AsyncExitStack()
             try:
@@ -3513,15 +5162,23 @@ class Bridge:
             except asyncio.CancelledError:
                 with contextlib.suppress(BaseException):
                     await stack.aclose()
+                conn.connecting = False
                 raise
             except Exception as e:
                 with contextlib.suppress(BaseException):
                     await stack.aclose()
+                if isinstance(e, BridgeError) and e.code == "gateway_starting":
+                    # Pending is distinct from failed. A readiness retry must not inherit
+                    # the offline cooldown, and the sidebar must not call it disconnected.
+                    conn.failed_msg = ""
+                    await self.emit("bot.status", name, status="starting", running=False)
+                    raise
                 conn.failed_at = self.clock()
-                conn.failed_msg = f"{name} is offline: {str(e) or type(e).__name__}"
+                conn.failed_code = e.code if isinstance(e, BridgeError) else "bot_offline"
+                conn.failed_msg = e.message if isinstance(e, BridgeError) else f"{name} is offline: {str(e) or type(e).__name__}"
                 conn.connecting = False
                 await self.emit("bot.status", name, status="offline", running=False)
-                raise BridgeError("bot_offline", conn.failed_msg)
+                raise BridgeError(conn.failed_code, conn.failed_msg)
             conn.stack, conn.client, conn.connecting, conn.failed_msg = stack, client, False, ""
             conn.pump = self._spawn(self._pump(conn))
         await self.emit("bot.status", name, status="online", running=conn.in_turn)
@@ -3529,6 +5186,9 @@ class Bridge:
 
     async def _drop(self, conn: Conn, *, emit: bool = True, reason: str = "") -> None:
         was_turn = conn.in_turn
+        self.performance.disconnected((conn.name, ''))
+        for folder in conn.folders.values():
+            self.performance.disconnected((conn.name, folder.id))
         pump, stack = conn.pump, conn.stack
         conn.client = conn.stack = conn.pump = None
         conn.in_turn = False
@@ -3539,6 +5199,11 @@ class Bridge:
         conn.asked.clear()
         conn.batches.clear()
         conn.clarify_batch = None
+        conn.model_confirmation = None
+        conn.transcript_paging = None
+        conn.transcript_scope = None
+        conn.history_cache = []
+        conn.history_token = ""
         if pump is not None and pump is not asyncio.current_task():
             pump.cancel()
             with contextlib.suppress(BaseException):
@@ -3550,10 +5215,12 @@ class Bridge:
             for f in folders:
                 if f.in_turn:
                     await self.emit("turn.end", conn.name, session=f.id, outcome="error", error=reason or "gateway disconnected")
-                await self.emit("folder.closed", conn.name, session=f.id, reason=reason or "gateway disconnected")
+                if f.kind == "folder":  # a thread stays listed: the next open attaches it again
+                    await self.emit("folder.closed", conn.name, session=f.id, reason=reason or "gateway disconnected")
             if was_turn:
                 await self.emit("turn.end", conn.name, outcome="error", error=reason or "gateway disconnected")
             conn.failed_at, conn.failed_msg = self.clock(), reason or f"{conn.name} is offline"
+            conn.failed_code = "bot_offline"
             await self.emit("bot.status", conn.name, status="offline", running=False)
 
     async def _call(self, conn: Conn, method: str, **params):
@@ -3642,12 +5309,28 @@ class Bridge:
 
     async def _main_event(self, conn: Conn, typ: str, params: dict, p: dict, chat: FolderChat | None = None) -> None:
         t = chat or conn
+        self.performance.observe((conn.name, chat.id if chat else ''), typ, params, p)
 
         async def out(event, **fields):
+            admission = params.get('admission_id')
+            if isinstance(admission, str) and 0 < len(admission) <= 256:
+                fields['admission_id'] = admission
             await self._chat_emit(conn, chat, event, **fields)
         if params.get("execution_generation") is not None:
             t.generation = params["execution_generation"]
-        if typ == "message.start":
+        if typ == "session.info":
+            info = p.get("info") if isinstance(p.get("info"), dict) else p
+            if isinstance(info.get("model"), str) and info["model"]:
+                # Policy events omit provider; the saved profile can differ from this chat's pick.
+                # Resume metadata only, never a transcript, for the canonical resolved route.
+                if not isinstance(info.get("provider"), str) or not info["provider"]:
+                    sid = chat.runtime_id if chat is not None else conn.main_id
+                    current = await self._call(conn, "session.info", session_id=sid)
+                    info = current or info
+                if info.get("provider"):
+                    await out("model.changed", model=str(info.get("model") or p.get("model") or ""),
+                              provider=str(info["provider"]), reasoning=str(info.get("reasoning_effort") or ""))
+        elif typ == "message.start":
             await self._begin_turn(conn, chat)
         elif typ == "status.update":
             text = p.get("text")
@@ -3680,10 +5363,20 @@ class Bridge:
             await out("tool.end", tool_id=str(p.get("tool_id") or p.get("tool_call_id") or ""),
                       name=str(p.get("name") or p.get("tool_name") or "tool"),
                       ok=not p.get("is_error"), ms=int(round(dur * 1000)) if isinstance(dur, (int, float)) else 0)
+        elif typ.startswith("subagent."):
+            # a background fan-out outlives the turn that started it: these never open a turn
+            fields = subagent_fields(typ, p)
+            if fields is not None:
+                await out("subagent", **fields)
         elif typ == "session.title" and chat is not None:
             # Hermes named a folder chat (its own titler, or /title); the name omher gave it at create is not news
             title = p.get("title")
-            if isinstance(title, str) and title.strip() and not title.startswith(FOLDER_CHAT_PREFIX):
+            if isinstance(title, str) and title.strip() and chat.kind == "thread":
+                name = thread_name(title)
+                if name and name != chat.title:
+                    chat.title = name
+                    await out("session.title", title=_one_line(name, CLI_TITLE))
+            elif isinstance(title, str) and title.strip() and not title.startswith(FOLDER_CHAT_PREFIX):
                 await out("session.title", title=_one_line(title, CLI_TITLE))
         elif typ == "message.delta":
             text = p.get("text")
@@ -3695,8 +5388,20 @@ class Bridge:
             turn = p.get("persisted_turn") if isinstance(p.get("persisted_turn"), dict) else {}
             mid = turn.get("final_assistant_row_id") or p.get("admission_id") or uuid.uuid4().hex
             status = p.get("status")
+            creates, route = [], None
+            if chat is None and status not in ("interrupted", "error") and "omher-thread" in text:
+                creates, route, text = split_blocks(text)
+                if route and creates:
+                    route = None  # a turn that opens threads does not also move the message
+            elif chat is not None and chat.kind == "thread" and text.strip():
+                chat.last = [ln for ln in text.strip().splitlines() if ln.strip()][-1]
+                chat.last_at = time.time()
             if text.strip():
-                await out("message", id=str(mid), text=text)
+                watch = await self._watch_tag(conn, turn) if chat is None else None
+                await out("message", id=str(mid), text=text, **({"watch": watch} if watch else {}))
+            if (creates or route) and str(mid) not in conn.split_done:
+                conn.split_done.add(str(mid))
+                self._spawn(self._split_effects(conn, str(mid), creates, route))
             if status == "interrupted":
                 await self._end_turn(conn, "interrupted", chat=chat)
             elif status == "error":
@@ -3792,15 +5497,86 @@ class Bridge:
                 reason = "timeout" if self.clock() - asked_at >= timeout - 1.0 else "resolved"
         await self._chat_emit(conn, chat, "prompt.expired", request_id=pid, reason=reason)
 
+    async def _watch_tag(self, conn: Conn, turn: dict) -> dict | None:
+        """``{name, ts}`` when the main-chat turn that just ended answered an automation's delivered result: its user
+        row is Hermes' `[Cronjob "<name>" output …]` header. Read from the Bot Chat's own history, only for a bot that
+        a bot-chat automation delivers to; None for every other turn or when the read fails."""
+        if not conn.watch_names or not conn.main_id:
+            return None
+        try:
+            res = await self._call(conn, "session.history", session_id=conn.main_id)
+        except Exception as e:
+            log.debug("watch history read failed: %s", e)
+            return None
+        rows = [r for r in (res.get("messages") or []) if isinstance(r, dict)]
+        uid, aid = turn.get("user_row_id"), turn.get("final_assistant_row_id")
+        row = next((r for r in reversed(rows) if uid is not None and r.get("row_id") == uid), None)
+        if row is None:
+            end = next((i for i in range(len(rows) - 1, -1, -1) if aid is not None and rows[i].get("row_id") == aid),
+                       len(rows))
+            row = next((r for r in reversed(rows[:end]) if r.get("role") == "user"), None)
+        name = watch_of(_row_text(row)) if row and row.get("role") == "user" else None
+        return {"name": name, "ts": float(row.get("timestamp") or time.time())} if name in conn.watch_names else None
+
+    def _watch_names(self, bot: str) -> set[str]:
+        """Names of the channel watches (jobs whose script is the collector) that deliver into `bot`'s Bot Chat; only
+        their answers are tagged `watch`. Other bot-chat automations are attached the same way but stay untagged."""
+        return {job for pairs in self._bot_chat_jobs.values() for target, job, is_watch in pairs
+                if is_watch and target == bot}
+
+    async def attach_watch_targets(self) -> None:
+        """Attach the existing Bot Chat of every bot a bot-chat automation delivers to, so the delivered turn reaches
+        omher as events even when the person never opened that bot. ``existing_only``: a bot without a Bot Chat gets
+        none (Hermes makes it on its first delivery; the next poll attaches it)."""
+        names = {b["name"] for b in discover_bots(self.home)}
+        want: dict[str, set[str]] = {}
+        for pairs in self._bot_chat_jobs.values():
+            for target, job, _ in pairs:
+                if target in names:
+                    want.setdefault(target, set()).add(job)
+        for name, conn in self.conns.items():
+            conn.watch_names = self._watch_names(name)
+        for bot in sorted(want):
+            conn = self.conns.get(bot)
+            if conn is not None and conn.connected and conn.main_id:
+                continue
+            if self.clock() - self._watch_tried.get(bot, -1e9) < WATCH_ATTACH_RETRY:
+                continue
+            self._watch_tried[bot] = self.clock()
+            try:
+                conn = await self._conn(bot)
+                conn.watch_names = self._watch_names(bot)
+                if not conn.main_id:
+                    snap = await self._ensure_main(conn, existing_only=True)
+                    info = snap.get("info") if isinstance(snap.get("info"), dict) else {}
+                    conn.in_turn = bool(snap.get("running") if snap.get("running") is not None else info.get("running"))
+            except Exception as e:
+                log.debug("watch attach %s: %s", bot, e)
+
     # ------------------------------------------------------------ main chat
 
-    async def _ensure_main(self, conn: Conn) -> dict:
-        """Find (or create) the bot's ``Bot Chat`` and attach to it. Returns the session snapshot."""
+    async def _ensure_main(self, conn: Conn, existing_only: bool = False) -> dict:
+        """Find (or create) the bot's ``Bot Chat`` and attach to it. Returns the session snapshot. With
+        ``existing_only`` a bot that has no Bot Chat yet gets none and the op answers ``not_found``: a bot outside
+        the sidebar list is asked for its waiting prompts this way, and asking must not make its Bot Chat."""
+        if conn.transcript_paging is None:
+            try:
+                description = await self._call(conn, "runtime.describe")
+            except Exception as exc:
+                if not _named(exc, "GatewayRPCError") or str(exc) not in {"method_not_found", "unsupported_method", "unknown_method"}:
+                    raise
+                description = {}
+            capabilities = description.get("capabilities") or []
+            conn.transcript_scope = "conversation" if "session-transcript-conversation-v1" in capabilities else None
+            conn.transcript_paging = "session-transcript-v1" in capabilities
         rows = (await self._call(conn, "session.list", title=BOT_CHAT_TITLE, include_hidden=True, limit=5)).get("sessions") or []
         if rows:
             stored = rows[0].get("resolved_id") or rows[0]["id"]
-            snap = await self._call(conn, "session.resume", session_id=stored)
+            snap = await self._call(conn, "session.resume", session_id=stored,
+                                    **({"omit_messages": True} if conn.transcript_paging else {}))
             snap.setdefault("stored_session_id", stored)
+        elif existing_only:
+            raise BridgeError("not_found", "this bot has no Bot Chat yet")
         else:
             snap = await self._call(conn, "session.create", title=BOT_CHAT_TITLE, hidden=True, follow_profile_config=True)
             try:  # materialise the row now, like Hermes' own desktop, so a second open finds it
@@ -3822,12 +5598,25 @@ class Bridge:
 
     async def op_chat_open(self, p) -> Reply:
         conn = await self._conn(p.get("bot"))
-        snap = await self._ensure_main(conn)
+        snap = await self._ensure_main(conn, existing_only=p.get("existing_only") is True)
         info = snap.get("info") if isinstance(snap.get("info"), dict) else {}
         bot = conn.bot
         running = bool(snap.get("running") if snap.get("running") is not None else info.get("running"))
         conn.in_turn = running
-        result = {"session_id": conn.main_id, "messages": chat_messages(snap.get("messages")), "running": running,
+        conn.watch_names = self._watch_names(conn.name)
+        if conn.transcript_paging:
+            page = await self._history_page(conn)
+            messages = page["messages"]
+            history = {"mode": "paged", "cursor": page["next_cursor"]}
+        else:
+            # Compatibility: the old protocol already sent the whole transcript. Keep it only in
+            # bridge memory and page its display rows; no model or stored history is rewritten.
+            conn.history_cache = chat_messages(snap.get("messages"), conn.watch_names, running, main=True, limit=None)
+            conn.history_token = uuid.uuid4().hex
+            edge = max(0, len(conn.history_cache) - HISTORY_PAGE_ROWS)
+            messages = conn.history_cache[edge:]
+            history = {"mode": "legacy", "cursor": f"{conn.history_token}:{edge}" if edge else None}
+        result = {"session_id": conn.main_id, "messages": messages, "history": history, "running": conn.in_turn,
                   "model": str(info.get("model") or bot["model"]), "provider": str(info.get("provider") or bot["provider"]),
                   "reasoning": str(info.get("reasoning_effort") or bot["reasoning"])}
         prompts = [x for x in (snap.get("prompts") or []) if isinstance(x, dict) and x.get("prompt_id")]
@@ -3844,6 +5633,34 @@ class Bridge:
                 await self._batch_clarify(conn, x)
         return Reply(result, replay if prompts or asks else None)
 
+    async def _history_page(self, conn: Conn, cursor: str | None = None) -> dict:
+        page = await self._call(conn, "session.transcript", session_id=conn.main_id,
+                                order="latest", limit=HISTORY_PAGE_ROWS, inline_images=False,
+                                **({"scope": conn.transcript_scope} if conn.transcript_scope else {}),
+                                **({"cursor": cursor} if cursor is not None else {}))
+        return {"session_id": conn.main_id, "messages": chat_messages(page.get("rows"), conn.watch_names, conn.in_turn if cursor is None else False,
+                                                                     main=True, limit=None),
+                "next_cursor": page.get("next_cursor"), "reset": page.get("reset") is True}
+
+    async def op_chat_history(self, p) -> dict:
+        cursor = p.get("cursor")
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 1024:
+            raise BridgeError("bad_request", "missing or invalid history cursor")
+        conn = await self._conn(p.get("bot"))
+        if not conn.main_id:
+            raise BridgeError("not_found", "open the bot's chat before reading older messages")
+        if conn.transcript_paging:
+            return await self._history_page(conn, cursor)
+        token, separator, raw_edge = cursor.partition(":")
+        if not separator or token != conn.history_token or not raw_edge.isdecimal():
+            raise BridgeError("bad_request", "history cursor expired; reopen the chat")
+        edge = int(raw_edge)
+        if not 0 < edge <= len(conn.history_cache):
+            raise BridgeError("bad_request", "invalid history cursor")
+        start = max(0, edge - HISTORY_PAGE_ROWS)
+        return {"session_id": conn.main_id, "messages": conn.history_cache[start:edge],
+                "next_cursor": f"{token}:{start}" if start else None, "reset": False}
+
     async def _target(self, conn: Conn, p: dict) -> tuple[str, FolderChat | None]:
         """The chat an op acts on: the main chat, or with ``session`` a folder chat this bridge created. Any
         other id (a client-supplied ``session_id``, another session's id) is never used."""
@@ -3856,6 +5673,7 @@ class Bridge:
         return chat.runtime_id, chat
 
     async def op_chat_send(self, p) -> dict:
+        received_at = self.clock()
         text = p.get("text")
         if not isinstance(text, str) or not text.strip():
             raise BridgeError("bad_request", "missing text")
@@ -3863,7 +5681,7 @@ class Bridge:
         if reply_to is not None and (not isinstance(reply_to, str) or not reply_to):
             raise BridgeError("bad_request", "reply_to must be a session id")
         conn = await self._conn(p.get("bot"))
-        main, _chat = await self._target(conn, p)
+        main, chat = await self._target(conn, p)
         if reply_to is not None:
             # A thread reference for the bot, read from the profile's own state.db. omher posts nothing.
             if reply_to in conn.main_ids:
@@ -3873,10 +5691,31 @@ class Bridge:
             if ref is None:
                 raise BridgeError("bad_request", "that session has no thread to reply in")
             text = f"{text.rstrip()}\n\n{reply_block(*ref)}"
+        if peer_hint_wanted(text):
+            text = f"{text.rstrip()}\n\n{PEER_HINT}"
+        if chat is None and conn.threads_shown:
+            text = f"{text.rstrip()}\n\n{thread_hint(self._hint_rows(conn))}"
         input_id = str(uuid.uuid4())
-        await self._probe_clarify_batch(conn)
-        await self._submit(conn, main, text, input_id)
-        return {"input_id": input_id}
+        trace = self.performance.begin((conn.name, chat.id if chat else ''), input_id, started=received_at)
+        try:
+            await self._probe_clarify_batch(conn)
+            self.performance.prepared(trace)
+            queued = p.get("queued") is True
+            receipt = await self._submit(conn, main, text, input_id, queued)
+            self.performance.accepted(trace, receipt)
+        except BaseException:
+            self.performance.failed(trace)
+            raise
+        result = {"input_id": input_id, "trace_id": trace.trace_id}
+        if isinstance(receipt, dict) and isinstance(receipt.get('admission_id'), str):
+            result['admission_id'] = receipt['admission_id']
+        if chat is not None and chat.kind == "thread" and not chat.title:
+            await self._name_thread(conn, chat, p["text"])
+        return result
+
+    async def op_performance_read(self, _p) -> dict:
+        """Read only bounded local durations; no model call, content, file or network I/O."""
+        return self.performance.snapshot()
 
     async def _probe_clarify_batch(self, conn: Conn) -> None:
         """Ask once per connection whether the gateway can send a turn's several clarify questions as one
@@ -3918,16 +5757,19 @@ class Bridge:
             raise BridgeError("attach_failed", str(res.get("message") or f"could not attach {name}"))
         return {"kind": kind, "name": name, "text": str(res.get("text") or ""), "ref_text": str(res.get("ref_text") or "")}
 
-    async def _submit(self, conn: Conn, main_id: str, text: str, input_id: str):
+    async def _submit(self, conn: Conn, main_id: str, text: str, input_id: str, queued: bool = False):
         # The single place a turn is sent. It takes the main chat's id or a folder chat's that this bridge
-        # created (both from _target), and nothing else.
+        # created (both from _target), and nothing else. ``queued`` (a message the app held, steer queue): when the
+        # session is still busy, Hermes runs it after that work in its own FIFO, never as a steer or interrupt.
         batch = {"clarify_batch": True} if conn.clarify_batch else {}
+        if queued:
+            batch["queued"] = True
         return await self._call(conn, "prompt.submit", session_id=main_id, text=text, input_id=input_id, **batch)
 
     async def _generation(self, conn: Conn, main: str, chat: FolderChat | None = None):
         t = chat or conn
         if t.generation is None:
-            snap = await self._call(conn, "session.resume", session_id=main)
+            snap = await self._call(conn, "session.resume", session_id=main, omit_messages=True)
             t.generation = snap.get("execution_generation")
         return t.generation if t.generation is not None else 0
 
@@ -3936,6 +5778,39 @@ class Bridge:
         main, chat = await self._target(conn, p)
         await self._call(conn, "session.interrupt", session_id=main, execution_generation=await self._generation(conn, main, chat))
         return {}
+
+    async def op_chat_steer(self, p) -> dict:
+        """Steer the running turn of the bot's main chat, or with ``session`` of a folder chat or thread this bridge
+        created (``_target``, as for send and interrupt; any other id is refused), through Hermes' own
+        ``session.steer``: the text joins the turn's next tool result, no new turn starts.
+        Hermes' answer goes back as: ``queued`` = taken; ``rejected`` = Hermes confirmed no agent saw it (its
+        ``delivered: false``, the old idle reply, or a gateway error answer such as 4002/4010/invalid params), so
+        the app may send it as a normal message after the turn; ``uncertain`` = a plain live-agent ``rejected``,
+        which Hermes' contract says may follow delivery, so it is never re-sent on its own. A lost answer (bot
+        offline, timeout) stays an error for the same reason. Nothing is sent another way here. The call carries
+        that chat's turn's ``execution_generation``, which the canonical gateway requires (as for
+        ``session.interrupt``)."""
+        text = p.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise BridgeError("bad_request", "missing text")
+        conn = await self._conn(p.get("bot"))
+        main, chat = await self._target(conn, p)
+        try:
+            res = await self._call(conn, "session.steer", session_id=main, text=text,
+                                   execution_generation=await self._generation(conn, main, chat))
+        except Exception as e:
+            if not _named(e, "GatewayRPCError"):
+                raise
+            return {"status": "rejected"}
+        res = res if isinstance(res, dict) else {}
+        status = res.get("status")
+        if status == "queued":
+            return {"status": "queued"}
+        # canonical gateway: a live agent's plain 'rejected' may follow delivery; only delivered: false is safe.
+        # The older tui_gateway reply has no execution_generation and answers 'rejected' only when idle.
+        if status == "rejected" and (res.get("delivered") is False or "execution_generation" not in res):
+            return {"status": "rejected"}
+        return {"status": "uncertain"}
 
     async def op_approval_respond(self, p) -> dict:
         choice, rid = p.get("choice"), p.get("request_id")
@@ -3986,16 +5861,17 @@ class Bridge:
         if not isinstance(cwd, str) or not cwd.strip() or not os.path.isabs(cwd) or not os.path.isdir(cwd):
             raise BridgeError("bad_request", "cwd must be an existing folder")
         conn = await self._conn(p.get("bot"))
-        if len(conn.folders) >= MAX_FOLDER_CHATS:
+        if sum(1 for f in conn.folders.values() if f.kind == "folder") >= MAX_FOLDER_CHATS:
             raise BridgeError("bad_request", f"at most {MAX_FOLDER_CHATS} folder chats per bot")
         leaf = Path(cwd).name or cwd
         snap = await self._call(conn, "session.create", title=FOLDER_CHAT_PREFIX + leaf, cwd=cwd, cwd_explicit=True,
                                 follow_profile_config=True)
         fid = "f" + uuid.uuid4().hex[:10]
-        chat = FolderChat(fid, cwd, str(snap["session_id"]), str(snap.get("stored_session_id") or snap["session_id"]))
+        chat = FolderChat(fid, cwd, str(snap["session_id"]), str(snap.get("stored_session_id") or snap["session_id"]),
+                          str(snap.get("subscription_id") or ""))
         if snap.get("execution_generation") is not None:
             chat.generation = snap["execution_generation"]
-        conn.folders[fid] = chat
+        self._keep_chat(conn, chat)
         info = snap.get("info") if isinstance(snap.get("info"), dict) else {}
         return {"session": fid, "cwd": str(info.get("cwd") or cwd),
                 "model": str(info.get("model") or conn.bot["model"]),
@@ -4003,14 +5879,252 @@ class Bridge:
                 "reasoning": str(info.get("reasoning_effort") or conn.bot["reasoning"])}
 
     async def op_folder_close(self, p) -> dict:
-        """Close a folder chat this bridge created: Hermes stops its agent; the conversation stays saved."""
+        """Close a folder chat this bridge created: Hermes stops its agent; the conversation stays saved.
+
+        Hermes' gateway closes a conversation with ``session.detach`` of the subscription ``session.create`` gave
+        and an ``end_reason`` (a viewer closing it, not leaving); it has no ``session.close``. A gateway without
+        ``session.detach`` (``unknown_method``) gets ``session.close`` as before; any other refusal is the error."""
         conn = await self._conn(p.get("bot"))
         fid = p.get("session")
         chat = conn.folders.pop(fid, None) if isinstance(fid, str) else None
         if chat is None:
             raise BridgeError("not_found", "no such folder chat")
+        if chat.subscription_id:
+            try:
+                await self._call(conn, "session.detach", session_id=chat.runtime_id, subscription_id=chat.subscription_id,
+                                 end_reason="omher_close")
+                return {}
+            except Exception as e:
+                if not (_named(e, "GatewayRPCError") and str(e) == "unknown_method"):
+                    raise
         await self._call(conn, "session.close", session_id=chat.runtime_id)
         return {}
+
+
+    # ------------------------------------------------------------ threads under a bot (`thread.*`)
+    #
+    # A thread is a Hermes session the bridge creates for the bot (`session.create`, titled `omher · …`), kept in
+    # `conn.folders` like a folder chat, so chat.send / interrupt / approval / clarify take `session=<thread>` and
+    # its events come tagged `session`. Its id is Hermes' stored session id, so the same thread keeps its id across
+    # app and bridge restarts. `thread.list` rebuilds the list from `session.list`; `thread.remove` interrupts it and
+    # archives it in Hermes (hidden, messages kept, restorable). Nothing is ever deleted.
+
+    def _keep_chat(self, conn: Conn, chat: FolderChat) -> None:
+        """The one place a chat the bridge created (or listed and attached) joins ``conn.folders``."""
+        conn.folders[chat.id] = chat
+
+    async def _name_thread(self, conn: Conn, chat: FolderChat, text: str) -> None:
+        """A new thread takes its first message's first words as its title (Hermes' own titler may rename it later;
+        a clash with another session's title adds a short tail)."""
+        name = _one_line(split_peer_hint(text), THREAD_TITLE)
+        if not name:
+            return
+        for title in (name, f"{name} · {chat.id[-4:]}"):
+            try:
+                await self._call(conn, "session.title", session_id=chat.runtime_id, title=THREAD_PREFIX + title)
+            except BridgeError:
+                raise
+            except Exception as e:
+                if _named(e, "GatewayClientError") and not _named(e, "GatewayRPCError"):
+                    raise
+                continue
+            chat.title = title
+            await self.emit("session.title", conn.name, session=chat.id, title=title)
+            return
+
+    def _thread_row(self, chat: FolderChat) -> dict:
+        return {"thread": chat.id, "title": chat.title, "cwd": chat.cwd, "started_at": chat.started,
+                "running": chat.in_turn, "needs": bool(chat.prompts or chat.batches), "message_count": 0, "preview": ""}
+
+    async def op_thread_create(self, p) -> dict:
+        """A new thread for the bot: an empty Hermes session in ``cwd`` (an existing folder) or, without one, where
+        the profile's own config starts it. ``key`` (optional) is the app's id for this press: a retry with the same
+        key gets the same session back (Hermes' ``idempotency_key``), never a second thread."""
+        title, cwd, key = p.get("title"), p.get("cwd"), p.get("key")
+        if title is not None and (not isinstance(title, str) or not title.strip()):
+            raise BridgeError("bad_request", "title must be text")
+        if cwd is not None and (not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd)):
+            raise BridgeError("bad_request", "cwd must be an existing folder")
+        if key is not None and (not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key)):
+            raise BridgeError("bad_request", "key must be 1-64 letters, digits, - or _")
+        conn = await self._conn(p.get("bot"))
+        if sum(1 for f in conn.folders.values() if f.kind == "thread") >= MAX_THREADS:
+            raise BridgeError("bad_request", f"at most {MAX_THREADS} open threads per bot")
+        name = _one_line(title, THREAD_TITLE * 2) if title else ""
+        extra = {"cwd": cwd, "cwd_explicit": True} if cwd else {}
+        if key:
+            extra["idempotency_key"] = f"omher-thread:{conn.name}:{key}"
+        placeholder = f"new thread {uuid.uuid4().hex[:6]}"
+        snap = await self._call(conn, "session.create", title=THREAD_PREFIX + (name or placeholder),
+                                follow_profile_config=True, **extra)
+        stored = str(snap.get("stored_session_id") or snap["session_id"])
+        info = snap.get("info") if isinstance(snap.get("info"), dict) else {}
+        chat = conn.folders.get(stored)
+        if chat is None:  # a retried key answers the session it already made: kept once, with the name it has
+            known = thread_name((conn.threads.get(stored) or {}).get("title") or "")
+            chat = FolderChat(stored, str(info.get("cwd") or cwd or ""), str(snap["session_id"]), stored,
+                              str(snap.get("subscription_id") or ""), kind="thread", title=name or known)
+            if snap.get("execution_generation") is not None:
+                chat.generation = snap["execution_generation"]
+            self._keep_chat(conn, chat)
+            await self.emit("thread.added", conn.name, thread=chat.id, title=chat.title)
+        return {**self._thread_row(chat), "model": str(info.get("model") or conn.bot["model"]),
+                "provider": str(info.get("provider") or conn.bot["provider"]),
+                "reasoning": str(info.get("reasoning_effort") or conn.bot["reasoning"])}
+
+    async def op_thread_list(self, p) -> dict:
+        """The bot's threads, newest first: its `omher · ` sessions Hermes still lists (archived ones it does not),
+        plus the ones made in this run that have no saved message yet. Each once."""
+        conn = await self._conn(p.get("bot"))
+        conn.threads_shown = True  # this app shows the bot's threads: its main-chat turns carry the threads note
+        rows = (await self._call(conn, "session.list", limit=200)).get("sessions") or []
+        out: dict[str, dict] = {}
+        folder_ids = {f.stored_id for f in conn.folders.values() if f.kind == "folder"}
+        for r in rows:
+            if not isinstance(r, dict) or not isinstance(r.get("title"), str) or not r["title"].startswith(THREAD_PREFIX):
+                continue
+            sid = str(r.get("id") or "")
+            if not sid or sid in conn.main_ids or sid in out or sid in folder_ids:
+                continue
+            conn.threads[sid] = r
+            live = conn.folders.get(sid)
+            out[sid] = {"thread": sid, "title": live.title if live and live.title else thread_name(r["title"]),
+                        "cwd": live.cwd if live and live.cwd else "", "started_at": float(r.get("started_at") or 0),
+                        "running": bool(live and live.in_turn), "needs": bool(live and (live.prompts or live.batches)),
+                        "message_count": int(r.get("message_count") or 0), "preview": _one_line(r.get("preview"), 120)}
+        for chat in conn.folders.values():
+            if chat.kind == "thread" and chat.id not in out:
+                out[chat.id] = self._thread_row(chat)
+        # a thread not attached in this run: the folder Hermes saved it with, so its terminal starts there
+        bare = [t["thread"] for t in out.values() if not t["cwd"]]
+        for sid, cwd in (await asyncio.to_thread(read_session_cwds, conn.bot["path"], bare)).items():
+            out[sid]["cwd"] = cwd
+        return {"threads": sorted(out.values(), key=lambda t: -float(t["started_at"] or 0))}
+
+    def _thread_known(self, conn: Conn, tid) -> str:
+        """``tid`` when it names a thread this bridge created or listed; the main chat and any other id refused."""
+        if not isinstance(tid, str) or not tid:
+            raise BridgeError("bad_request", "missing thread")
+        if tid in conn.main_ids:
+            raise BridgeError("bad_request", "that is the bot's main chat, not a thread")
+        chat = conn.folders.get(tid)
+        if chat is not None and chat.kind == "thread":
+            return tid
+        if chat is None and tid in conn.threads:
+            return tid
+        raise BridgeError("not_found", "no such thread")
+
+    async def op_thread_open(self, p) -> Reply:
+        """Attach a thread (resume) and return its messages, as ``chat.open`` does for the main chat; prompts still
+        waiting on the person are sent again after the reply."""
+        conn = await self._conn(p.get("bot"))
+        tid = self._thread_known(conn, p.get("thread"))
+        chat = conn.folders.get(tid)
+        snap = await self._call(conn, "session.resume", session_id=chat.stored_id if chat else tid)
+        info = snap.get("info") if isinstance(snap.get("info"), dict) else {}
+        running = bool(snap.get("running") if snap.get("running") is not None else info.get("running"))
+        if chat is None:
+            row = conn.threads.get(tid) or {}
+            chat = FolderChat(tid, str(info.get("cwd") or ""), str(snap["session_id"]), tid,
+                              str(snap.get("subscription_id") or ""), kind="thread", title=thread_name(row.get("title") or ""))
+            chat.started = float(row.get("started_at") or chat.started)
+            self._keep_chat(conn, chat)
+        else:
+            chat.runtime_id = str(snap.get("session_id") or chat.runtime_id)
+        if snap.get("execution_generation") is not None:
+            chat.generation = snap["execution_generation"]
+        chat.in_turn = running
+        result = {"thread": tid, "session_id": tid, "title": chat.title, "cwd": chat.cwd,
+                  "messages": chat_messages(snap.get("messages"), running=running), "running": running,
+                  "model": str(info.get("model") or conn.bot["model"]), "provider": str(info.get("provider") or conn.bot["provider"]),
+                  "reasoning": str(info.get("reasoning_effort") or conn.bot["reasoning"])}
+        prompts = [x for x in (snap.get("prompts") or []) if isinstance(x, dict) and x.get("prompt_id")]
+        asks = [x for x in (snap.get("open_requests") or [])
+                if isinstance(x, dict) and x.get("method") == "clarify" and isinstance(x.get("id"), str)]
+
+        async def replay():
+            for x in prompts:
+                pid = str(x["prompt_id"])
+                chat.prompts[pid] = x.get("execution_generation")
+                await (self._emit_clarify if x.get("kind") == "clarify" else self._emit_approval)(conn, pid, x, chat)
+            for x in asks:
+                await self._batch_clarify(conn, x)
+        return Reply(result, replay if prompts or asks else None)
+
+    def _hint_rows(self, conn: Conn) -> list[dict]:
+        """The bot's open threads for the note, newest activity first: attached ones with their latest answer's last
+        line, then listed ones with Hermes' preview."""
+        rows: dict[str, dict] = {}
+        for tid, r in conn.threads.items():
+            if tid not in conn.main_ids:
+                rows[tid] = {"thread": tid, "title": thread_name(r.get("title") or ""), "last": r.get("preview") or "",
+                             "at": float(r.get("last_active") or r.get("started_at") or 0)}
+        for f in conn.folders.values():
+            if f.kind == "thread":
+                old = rows.get(f.id, {})
+                rows[f.id] = {"thread": f.id, "title": f.title or old.get("title") or "", "last": f.last or old.get("last") or "",
+                              "at": max(f.last_at, f.started, old.get("at") or 0)}
+        return sorted(rows.values(), key=lambda r: -r["at"])
+
+    def _thread_title(self, conn: Conn, tid: str) -> str | None:
+        """A thread's name when ``tid`` is one of the bot's open threads; None for any other id (main chat too)."""
+        if not isinstance(tid, str) or tid in conn.main_ids:
+            return None
+        f = conn.folders.get(tid)
+        if f is not None:
+            return (f.title or "") if f.kind == "thread" else None
+        r = conn.threads.get(tid)
+        return thread_name(r.get("title") or "") if r is not None else None
+
+    async def _split_effects(self, conn: Conn, mid: str, creates: list[dict], route: dict | None) -> None:
+        """What a main-chat answer's blocks do. Each ``omher-thread`` block: a thread made for it, its task sent
+        there, and one `thread.split` event (the app's link line). A route block to an open thread: one
+        `thread.route` event (the app's "Send this to …?" card); nothing is sent until the person presses Send there.
+        A route never creates a thread; one to an id that is not an open thread is ignored."""
+        if route is not None:
+            title = self._thread_title(conn, route["thread"])
+            if title is not None:
+                await self.emit("thread.route", conn.name, thread=route["thread"], title=title, message=mid)
+            return
+        tag = uuid.uuid5(uuid.NAMESPACE_URL, f"omher-split:{conn.name}:{mid}").hex[:20]
+        for n, block in enumerate(creates):
+            try:
+                made = await self.op_thread_create({"bot": conn.name, "title": block["title"], "key": f"split-{tag}-{n}"})
+                tid = made["thread"]
+                await self.emit("thread.split", conn.name, thread=tid, title=made["title"] or block["title"], message=mid)
+                await self.op_chat_send({"bot": conn.name, "session": tid, "text": block["task"]})
+            except Exception:
+                log.exception("opening a thread from the bot's answer failed")
+
+    async def op_thread_remove(self, p) -> dict:
+        """Take a thread out of the bot's list: interrupt it when it runs, withdraw the asks it holds, then Hermes'
+        own ``session.archive`` (hidden, messages kept, restorable in Hermes). Never the main chat, never a
+        session this bridge did not create or list as a thread, never a delete."""
+        conn = await self._conn(p.get("bot"))
+        tid = self._thread_known(conn, p.get("thread"))
+        chat = conn.folders.get(tid)
+        if chat is not None and chat.in_turn:
+            await self._call(conn, "session.interrupt", session_id=chat.runtime_id,
+                             execution_generation=await self._generation(conn, chat.runtime_id, chat))
+        if chat is not None:
+            for pid in [*chat.prompts, *chat.batches]:
+                await self._chat_emit(conn, chat, "prompt.expired", request_id=pid, reason="cancelled")
+            chat.prompts.clear()
+            chat.batches.clear()
+            chat.asked.clear()
+        await self._call(conn, "session.archive", session_id=chat.stored_id if chat else tid, archived=True)
+        conn.threads.pop(tid, None)
+        if chat is not None:
+            conn.folders.pop(tid, None)
+            if chat.in_turn:
+                chat.in_turn = False
+                await self._chat_emit(conn, chat, "turn.end", outcome="interrupted")
+            if chat.subscription_id:  # Hermes lets go of the agent; the archived conversation stays saved
+                with contextlib.suppress(Exception):
+                    await self._call(conn, "session.detach", session_id=chat.runtime_id,
+                                     subscription_id=chat.subscription_id, end_reason="omher_archive")
+        await self.emit("thread.removed", conn.name, thread=tid)
+        return {"thread": tid, "archived": True}
 
     # ------------------------------------------------------------ models
 
@@ -4023,45 +6137,79 @@ class Bridge:
             providers.append({"slug": str(pr.get("slug") or ""), "name": str(pr.get("name") or pr.get("slug") or ""),
                               "models": [m for m in models if m]})
         reasoning = conn.bot["reasoning"]
+        sess_model = sess_provider = ""
         if conn.main_id:
             with contextlib.suppress(Exception):
-                snap = await self._call(conn, "session.resume", session_id=conn.main_id)
-                reasoning = str((snap.get("info") or {}).get("reasoning_effort") or reasoning)
+                snap = await self._call(conn, "session.resume", session_id=conn.main_id, omit_messages=True)
+                info = snap.get("info") or {}
+                reasoning = str(info.get("reasoning_effort") or reasoning)
+                # The picker's "current" must be the session's live model: ``model.options`` reports the
+                # profile default, which a session-level switch does not change.
+                sess_model = str(info.get("model") or "")
+                sess_provider = str(info.get("provider") or "")
         return {"providers": providers,
-                "current": {"model": str(res.get("model") or conn.bot["model"]),
-                            "provider": str(res.get("provider") or conn.bot["provider"]), "reasoning": reasoning},
+                "current": {"model": sess_model or str(res.get("model") or conn.bot["model"]),
+                            "provider": sess_provider or str(res.get("provider") or conn.bot["provider"]),
+                            "reasoning": reasoning},
                 "reasoning_levels": list(REASONING_LEVELS)}
 
     async def op_set_model(self, p) -> dict:
-        model, provider, reasoning = p.get("model"), p.get("provider"), p.get("reasoning")
-        for k, v in (("model", model), ("provider", provider), ("reasoning", reasoning)):
-            if v is not None and (not isinstance(v, str) or not v.strip()):
+        model, provider, reasoning, confirm = (p.get(k) for k in ("model", "provider", "reasoning", "confirm"))
+        for k, v in (("model", model), ("provider", provider), ("reasoning", reasoning), ("confirm", confirm)):
+            if v is not None and (not isinstance(v, str) or not v.strip() or len(v) > 2048):
                 raise BridgeError("bad_request", f"{k} must be a non-empty string")
         if model is None and reasoning is None:
             raise BridgeError("bad_request", "need model or reasoning")
-        if provider is not None and model is None:
-            raise BridgeError("bad_request", "provider needs a model")
+        if (provider is not None or confirm is not None) and model is None:
+            raise BridgeError("bad_request", "provider and confirmation need a model")
         if reasoning is not None and reasoning not in REASONING_LEVELS:
             raise BridgeError("bad_request", f"unknown reasoning level {reasoning}")
         conn = await self._conn(p.get("bot"))
         main, _chat = await self._target(conn, p)
 
-        async def mutate(operation: str, payload: dict):
-            snap = await self._call(conn, "session.resume", session_id=main)  # fresh revision + generation
-            return await self._call(conn, "session.mutate", session_id=main, request_id=uuid.uuid4().hex,
-                                    expected_revision=snap.get("revision", 0),
-                                    expected_generation=snap.get("execution_generation", 0),
-                                    operation=operation, payload=payload) or {}
+        async def snapshot():
+            snap = await self._call(conn, "session.resume", session_id=main, omit_messages=True)
+            info = snap.get("info") or {}
+            return snap, {"model": str(info.get("model") or ""), "provider": str(info.get("provider") or conn.bot["provider"]),
+                          "reasoning": str(info.get("reasoning_effort") or "")}
+
+        async def mutate(operation: str, payload: dict, initial=None):
+            for attempt in range(2):
+                snap, current = initial if attempt == 0 and initial is not None else await snapshot()
+                try:
+                    result = await self._call(conn, "session.mutate", session_id=main, request_id=uuid.uuid4().hex,
+                                              expected_revision=snap.get("revision", 0),
+                                              expected_generation=snap.get("execution_generation", 0),
+                                              operation=operation, payload=payload) or {}
+                    return result, current, {"revision": snap.get("revision", 0),
+                                             "execution_generation": snap.get("execution_generation", 0)}
+                except Exception as e:
+                    # Retry only an explicit stale-fence refusal, never an ambiguous lost reply.
+                    if attempt or not _named(e, "GatewayRPCError") or str(e) not in {"revision_conflict", "stale_generation"}:
+                        raise
+        deferred = False
         if model is not None:
-            res = await mutate("model", {"model": model, **({"provider": provider} if provider else {})})
+            payload = {"model": model, **({"provider": provider} if provider else {}), **({"confirm": confirm} if confirm else {})}
+            pending, conn.model_confirmation = conn.model_confirmation, None
+            initial = None
+            if (pending is not None and confirm is not None and pending["session_id"] == main
+                    and pending["model"] == model and pending["provider"] == provider and pending["confirm"] == confirm):
+                # Resume may move the revision: an explicit confirm must reuse the selection's original fence.
+                initial = (pending["fence"], pending["current"])
+            res, current, fence = await mutate("model", payload, initial)
             if res.get("status") == "confirmation_required":
-                raise BridgeError("confirmation_required", str(res.get("confirm_message") or "this model needs a confirmation"))
+                token = res.get("confirm")
+                if not isinstance(token, str) or not token:
+                    raise BridgeError("confirmation_required", str(res.get("confirm_message") or "model confirmation unavailable"))
+                conn.model_confirmation = {"session_id": main, "model": model, "provider": provider,
+                                           "confirm": token, "fence": fence, "current": current}
+                return {**current, "confirmation": {"token": token, "message": str(res.get("confirm_message") or "")}}
+            deferred = res.get("status") == "deferred"
         if reasoning is not None:
-            await mutate("reasoning", {"effort": reasoning})
-        snap = await self._call(conn, "session.resume", session_id=main)
-        info = snap.get("info") or {}
-        return {"model": str(info.get("model") or ""), "provider": str(info.get("provider") or conn.bot["provider"]),
-                "reasoning": str(info.get("reasoning_effort") or "")}
+            res, _, _ = await mutate("reasoning", {"effort": reasoning})
+            deferred = deferred or res.get("status") == "deferred"
+        _, current = await snapshot()
+        return {**current, **({"status": "deferred"} if deferred else {})}
 
     # ------------------------------------------------------------ bots / hello / routines
 
@@ -4091,11 +6239,90 @@ class Bridge:
                          "description": str(row.get("description") or b["description"]),
                          "status": status, "running": bool(conn and conn.in_turn),
                          "avatar_rev": avatar_rev(b["path"])})
+        for link in list(self.peers.values()):
+            bots += await self._peer_bots(link)
         return {"bots": bots}
 
-    # ------------------------------------------------------------ bot profile: name, picture, facts
-    # The only writes omher makes to a profile. Both are presentation-only in Hermes: the profile id,
-    # its folder, config and sessions never change.
+    # ------------------------------------------------------------ bot profile: creation, name, picture, facts
+
+    async def op_bots_create(self, p) -> dict:
+        """Explicit Create Bot: Hermes owns the config-only clone and channel stripping.
+        No clone-all, wrapper alias, launch credential mirroring, or caller-selected clone flags."""
+        name = p.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
+            raise BridgeError("invalid_name", "Use 1–64 lowercase letters, numbers, hyphens or underscores, starting with a letter.")
+        if name in {"default", "hermes", "root", "sudo", "test", "tmp"}:
+            raise BridgeError("invalid_name", "That bot ID is reserved. Choose a different ID.")
+        display = clean_display_name(p.get("display_name"))
+        if not display:
+            raise BridgeError("bad_request", "Give the bot a name.")
+        source = self._bot(p.get("source"))
+        fields = {}
+        for key, limit in (("description", 500), ("soul", 16000)):
+            value = p.get(key, "")
+            if not isinstance(value, str) or len(value) > limit:
+                raise BridgeError("bad_request", f"{key} must be text of at most {limit} characters")
+            if value.strip():
+                fields[key] = value.strip()
+        async with self._create_lock:
+            target = self.home / "profiles" / name
+            # Includes hidden/marker-less directories and dangling links: never overwrite any of them.
+            if os.path.lexists(target):
+                raise BridgeError("already_exists", "That bot ID already exists.")
+            conn = await self._conn(source["name"])
+            try:
+                result = await self._call(conn, "profiles.create", name=name, clone_from=source["name"],
+                                          clone_all=False, clone_channels=False, mirror_credentials=False,
+                                          no_alias=True, **fields)
+            except Exception as exc:
+                if _named(exc, "GatewayRPCError") and getattr(exc, "code", None) == 4062:
+                    if os.path.lexists(target):
+                        raise BridgeError("already_exists", "That bot ID already exists.") from exc
+                    raise BridgeError("bad_request", "Hermes refused this bot ID or source profile. Choose another ID and try again.") from exc
+                raise
+            # The source gateway may belong to a remote/routed owner. Never report a bot that did not
+            # appear in this bridge's own home, and never use a server-returned path as write authority.
+            created = next((b for b in discover_bots(self.home) if b["name"] == name), None)
+            if not result.get("ok") or created is None or target.is_symlink():
+                raise BridgeError("create_unconfirmed", "Hermes did not confirm the new bot in this installation. Refresh the bot list before trying again.")
+            warning = ""
+            try:
+                await asyncio.to_thread(write_display_name, target, display)
+            except Exception:
+                warning = "The bot was created, but its display name could not be saved. Rename it in bot settings."
+            if fields.get("soul") and not result.get("soul_written"):
+                warning = "The bot was created, but Hermes did not save its custom personality. It keeps the source bot's personality."
+            await self.emit("bots.update", name)
+            listed = await self.op_bots_list({})
+            bot = next(b for b in listed["bots"] if b["name"] == name)
+            return {"bot": bot, **({"warning": warning} if warning else {})}
+    async def op_bots_ready(self, p) -> dict:
+        """Can this bot answer? Hermes' own read-only readiness probe on the bot's gateway (``setup.runtime_check``):
+        the resolver session creation runs (model pin, then the fallback chain). With ``provider`` (the connect block
+        sends its sign-in's id) the strict single-provider check, to tell a sign-in that just finished.
+        ``online`` in bots.list is only the socket; this is whether a message would get an answer."""
+        provider = p.get("provider")
+        if provider is not None and not (isinstance(provider, str) and PROVIDER_ID.fullmatch(provider)):
+            raise BridgeError("bad_request", "provider must be a Hermes provider id")
+        conn = await self._conn(p.get("bot"))
+        params = {"provider": provider} if provider else {}
+        for wait in READY_RETRY:
+            try:
+                res = await self._call(conn, "setup.runtime_check", **params) or {}
+                break
+            except BridgeError:
+                raise
+            except Exception as e:
+                # an older gateway without the probe: say nothing either way (the chat shows no block)
+                if _named(e, "GatewayRPCError") and str(e) == "unknown_method":
+                    return {"ok": True, "provider": "", "model": "", "error": "", "unknown": True}
+                # Hermes' retryable "still checking" (5097): ask again shortly, then report it as not known
+                if not _named(e, "GatewayRPCError") or wait is None:
+                    return {"ok": True, "provider": "", "model": "", "error": "", "unknown": True}
+                await asyncio.sleep(wait)
+        return {"ok": bool(res.get("ok")), "provider": str(res.get("provider") or ""),
+                "model": str(res.get("model") or ""), "error": str(res.get("error") or "")}
+
 
     async def op_bots_rename(self, p) -> dict:
         bot = self._bot(p.get("bot"))
@@ -4132,6 +6359,71 @@ class Bridge:
             await self._call(conn, "profiles.set_asset", **params)
         await self.emit("bots.update", bot["name"])
         return {"avatar_rev": avatar_rev(bot["path"])}
+
+    # ------------------------------------------------------------ restart one bot (BOUNDARY rule 29)
+    # Only on the person's press, only through Hermes' own `hermes -p <bot> gateway restart`. Never a signal, a
+    # service manager call, a stop or a "restart all"; `--yes` only right after Hermes refused for live work.
+
+    async def op_bots_restart_scope(self, p) -> dict:
+        """The gateway process that serves this bot and every bot that restarts with it (this one included)."""
+        bot = self._bot(p.get("bot"))
+        gw = await asyncio.to_thread(gateway_of, self.home, bot["name"])
+        return {"gateway": gw, "bots": await asyncio.to_thread(gateway_bots, self.home, gw)}
+
+    async def op_bots_restart(self, p) -> Reply:
+        bot = self._bot(p.get("bot"))
+        name = bot["name"]
+        if not PROFILE_ID.fullmatch(name):
+            raise BridgeError("bad_request", f"{name} is not a profile id Hermes accepts")
+        interrupt = p.get("interrupt") is True
+        # the process that serves this bot: the host gateway (default) or the bot's own; every bot on it restarts
+        gw = await asyncio.to_thread(gateway_of, self.home, name)
+        if interrupt and self.clock() - self._refused.get(gw, -1e9) > RESTART_ANYWAY_WINDOW:
+            raise BridgeError("bad_request", "Restart anyway follows a refusal for live work")
+        if gw in self._restarting:
+            raise BridgeError("busy", f"{bot['display_name']} is already restarting")
+        hermes = hermes_path()
+        if not hermes:
+            return Reply({"outcome": "failed", "line": "Hermes is not on this computer."})
+        down = [o["name"] for o in await asyncio.to_thread(gateway_bots, self.home, gw)]
+        jobs = {str(j["id"]): o for o in down for j in _read_jobs(self._bot(o)["path"])}
+        self._restarting.add(gw)
+        try:
+            out = await asyncio.to_thread(run_hermes_restart, hermes, gw, self.home, interrupt, RESTART_TIMEOUT, jobs)
+        finally:
+            self._restarting.discard(gw)
+        self._refused.pop(gw, None)
+        if out["outcome"] == "refused":
+            self._refused[gw] = self.clock()
+        if out["outcome"] != "ok":
+            return Reply(out)
+        async def reattach() -> None:
+            self._spawn(self._reattach(down or [name]))
+        return Reply({**out, "bots": down}, after=reattach)
+
+    async def _reattach(self, names: list[str]) -> None:
+        """After a restart: drop the old connections (their gateway is gone or replaced) and attach again, so the
+        open chats re-read themselves; `bot.restarted` says when each one is back (or that it did not come back)."""
+        for n in names:
+            conn = self.conns.get(n)
+            if conn is not None and conn.connected:
+                await self._drop(conn, reason=f"{conn.bot['display_name']} restarted")
+        pending = list(names)
+        deadline = self.clock() + RESTART_WAIT
+        while pending and self.clock() < deadline:
+            await asyncio.sleep(RESTART_POLL)
+            for n in list(pending):
+                conn = self.conns.get(n)
+                if conn is not None:
+                    conn.failed_at, conn.failed_msg = 0.0, ""
+                try:
+                    await self._conn(n)
+                except BridgeError:
+                    continue
+                pending.remove(n)
+                await self.emit("bot.restarted", n, ok=True)
+        for n in pending:
+            await self.emit("bot.restarted", n, ok=False)
 
     async def op_bots_info(self, p) -> dict:
         bot = self._bot(p.get("bot"))
@@ -4202,12 +6494,13 @@ class Bridge:
         return {"runs": await asyncio.to_thread(self.runs.list, bot["name"], bot["path"])}
 
     async def op_runs_get(self, p) -> dict:
-        bot = self._bot(p.get("bot"))
         run = p.get("run")
         if not isinstance(run, str) or not run:
             raise BridgeError("bad_request", "missing run")
+        # a CLI agent's run (a SESSIONS chat's own, or one listed under a bot) is found by its id alone
         if run.split(":", 1)[0] in CLI_AGENTS:
             return await asyncio.to_thread(self.cli.get, run)
+        bot = self._bot(p.get("bot"))
         return await asyncio.to_thread(self.runs.get, bot["name"], bot["path"], run)
 
     async def op_runs_prs(self, p) -> dict:
@@ -4223,7 +6516,7 @@ class Bridge:
         return {"prs": await asyncio.to_thread(self.prs.states, got["run"])}
 
     async def op_runs_cli(self, p) -> dict:
-        """CLI agent sessions with sub-runs: `agent` (claude, codex, pi, omp, grok; all when absent), `cwd` (only
+        """CLI agent sessions with sub-runs: `agent` (claude, codex, omo, pi, omp, grok; all when absent), `cwd` (only
         sessions in that folder) and `since` (epoch seconds; the last week when absent)."""
         agent, cwd, since = p.get("agent"), p.get("cwd"), p.get("since")
         if agent is not None and agent not in CLI_AGENTS:
@@ -4233,6 +6526,18 @@ class Bridge:
         if since is not None and (isinstance(since, bool) or not isinstance(since, (int, float))):
             raise BridgeError("bad_request", "since must be epoch seconds")
         return await asyncio.to_thread(self.cli.list, agent, cwd, since)
+
+    async def op_runs_node_session(self, p) -> dict:
+        """One node's session as a chat (read-only): `{bot, run, node}`, or `{bot, ref}` for a child an earlier read
+        named, or `{bot, goal, since}` for a subagent card of the bot's own chat. `{session: null}` when none is found."""
+        bot = self._bot(p.get("bot"))
+        run, node, ref, goal, since = p.get("run"), p.get("node"), p.get("ref"), p.get("goal"), p.get("since")
+        for k, v in (("run", run), ("node", node), ("ref", ref), ("goal", goal)):
+            if v is not None and (not isinstance(v, str) or not v or len(v) > 2000):
+                raise BridgeError("bad_request", f"{k} must be text")
+        if since is not None and (isinstance(since, bool) or not isinstance(since, (int, float))):
+            raise BridgeError("bad_request", "since must be epoch seconds")
+        return await asyncio.to_thread(self.node_sessions.read, bot, self.runs, run, node, ref, goal, since)
 
     async def op_cli_title(self, p) -> dict:
         """The title of one Claude Code session or Codex thread a SESSIONS chat runs (`agent`, `session`: the id the
@@ -4280,6 +6585,16 @@ class Bridge:
         out = []
         for b in discover_bots(self.home):
             out += [{**j, "bot": b["name"]} for j in read_automations(b["path"])]
+        for link in list(self.peers.values()):
+            if not link.connected:
+                continue
+            with contextlib.suppress(BridgeError):
+                got = await link.call("automations.list", {}, PEER_LIST_TIMEOUT)
+                for j in (got or {}).get("automations") or []:
+                    if isinstance(j, dict) and j.get("bot") in link.names:
+                        out.append({**j, "bot": f"{link.peer}:{j['bot']}",
+                                    "deliver": re.sub(r"\bbot-chat:(?=[A-Za-z0-9])", f"bot-chat:{link.peer}:",
+                                                      str(j.get("deliver") or ""))})
         return {"automations": out}
 
     async def op_automations_add(self, p) -> dict:
@@ -4378,7 +6693,9 @@ class Bridge:
         installed = str(res.get("plugin_name") or res.get("name") or name)
         self._own_plugins.add((bot["name"], installed))
         return {"name": installed, "enabled": bool(res.get("enabled", True)),
-                "restart_required": bool(res.get("restart_required")), "warnings": _strs(res.get("warnings"), 6),
+                "restart_required": bool(res.get("restart_required")), "load": plugin_load(res),
+                "restart_bot": gateway_of(self.home, bot["name"]),
+                "warnings": _strs(res.get("warnings"), 6),
                 "missing_env": _strs(res.get("missing_env"), 12)}
 
     async def op_plugins_toggle(self, p) -> dict:
@@ -4388,7 +6705,8 @@ class Bridge:
             raise BridgeError("bad_request", "enable is true or false")
         conn = await self._conn(bot["name"])
         res = await self._plugins(conn, "toggle", key=key, enable=p["enable"])
-        return {"name": str(res.get("name") or key), "restart_required": bool(res.get("restart_required"))}
+        return {"name": str(res.get("name") or key), "restart_required": bool(res.get("restart_required")),
+                "load": plugin_load(res) if p["enable"] else "live", "restart_bot": gateway_of(self.home, bot["name"])}
 
     async def op_plugins_update(self, p) -> dict:
         bot = self._bot(p.get("bot"))
@@ -4398,7 +6716,32 @@ class Bridge:
         if res.get("consent_required") or res.get("scan_blocked"):
             raise BridgeError("needs_review", f"This update needs a closer look. Ask {bot['display_name']} in chat to update {name}.")
         return {"name": str(res.get("name") or name), "unchanged": bool(res.get("unchanged")),
-                "restart_required": bool(res.get("restart_required"))}
+                "restart_required": bool(res.get("restart_required")),
+                "load": "live" if res.get("unchanged") else plugin_load(res),
+                "restart_bot": gateway_of(self.home, bot["name"])}
+
+    async def op_plugins_reload(self, p) -> dict:
+        """Ask the bot's running gateway to load newly enabled plugins now (Hermes' `reload-plugins`): handlers go
+        live at once, tools and prompt sections from the bot's next conversation. Restarts nothing."""
+        bot = self._bot(p.get("bot"))
+        name = self._plugin_name(p) if p.get("name") is not None else ""
+        try:
+            answer = await asyncio.to_thread(reload_plugins, bot["path"], self.home)
+        except ImportError:
+            answer = None
+        if not isinstance(answer, dict):
+            return {"load": "failed", "line": f"{bot['display_name']}'s Hermes did not answer."}
+        if not answer.get("reloaded"):
+            return {"load": "failed", "line": _clip(str(answer.get("error") or "Hermes did not reload its plugins."), 300)}
+        act = None
+        for entry in answer.get("activations") or []:
+            key = str(entry.get("key") or "") if isinstance(entry, dict) else ""
+            if name and name in (entry.get("name"), key, key.rsplit("/", 1)[-1]):
+                act = entry
+                break
+        missing = (act or {}).get("missing_dependencies") or []
+        return {"load": "restart" if missing else "live", "missing": _strs(missing, 12),
+                "restart_bot": gateway_of(self.home, bot["name"])}
 
     async def op_plugins_remove(self, p) -> dict:
         bot = self._bot(p.get("bot"))
@@ -4421,10 +6764,16 @@ class Bridge:
             st = self._routine_state.get(b["name"])
             if st is not None and st["mtime"] == mtime:
                 continue
-            jobs = read_automations(b["path"]) if mtime is not None else []
+            raw = _read_jobs(b["path"]) if mtime is not None else []
+            jobs = read_automations(b["path"], raw)
             last = {j["id"]: j["last_run_at"] for j in jobs}
+            by_id = {str(j["id"]): j for j in raw}
+            self._bot_chat_jobs[b["name"]] = [(t, j["name"], j.get("watch") is not None) for j in jobs
+                                              for t in sorted(bot_chat_targets(j["deliver"], b["name"]))]
             if st is not None:
-                ran += [(b["name"], j) for j in jobs if j["last_run_at"] and st["last"].get(j["id"]) != j["last_run_at"]]
+                ran += [(b["name"], {**j, "bot_chat": bool(bot_chat_targets(j["deliver"], b["name"])),
+                                     "delivered": delivered_to(by_id.get(j["id"], {}), b["name"])})
+                        for j in jobs if j["last_run_at"] and st["last"].get(j["id"]) != j["last_run_at"]]
                 self._routine_changes.append(("routines.update", b["name"], {}))
                 for j in jobs:
                     if j["id"] not in st["last"] and (b["name"], j["id"]) not in self._own_jobs:
@@ -4446,8 +6795,13 @@ class Bridge:
     async def poll_routines_once(self) -> int:
         ran = self.poll_routines()
         for bot, j in ran:
+            status, extra = str(j["last_status"] or "ok"), {}
+            if j.get("bot_chat") and status.strip().lower() not in FAILED_RUN:
+                if not j.get("delivered"):
+                    continue  # a silent run handed nothing over: no line, no unread
+                extra["delivered"] = j["delivered"]  # the answer arrives as that Bot Chat's turn
             await self.emit("routine.ran", bot, routine_id=j["id"], name=j["name"],
-                            status=str(j["last_status"] or "ok"), ts=_to_ts(j["last_run_at"]))
+                            status=status, ts=_to_ts(j["last_run_at"]), **extra)
         changes, self._routine_changes = self._routine_changes, []
         for event, bot, j in changes:
             if event == "routine.added":
@@ -4456,6 +6810,7 @@ class Bridge:
                                 ts=_to_ts(j.get("created_at")))
             else:
                 await self.emit(event, bot)
+        await self.attach_watch_targets()
         return len(ran)
 
     async def poll_plugins_once(self) -> int:
@@ -4485,6 +6840,8 @@ class Bridge:
     async def _watch(self) -> None:
         self.poll_routines()  # baseline: nothing that already ran is announced
         self.poll_plugins()
+        with contextlib.suppress(Exception):
+            await self.attach_watch_targets()
         last_else = self.clock()
         while True:
             await asyncio.sleep(self.poll_s)
@@ -4496,6 +6853,150 @@ class Bridge:
                 last_else = self.clock()
                 with contextlib.suppress(Exception):
                     await self.poll_elsewhere_once()
+
+    # ------------------------------------------------------------ SSH peers (BOUNDARY rule 31)
+
+    @staticmethod
+    def _peer_args(p) -> tuple[str, str, str, str]:
+        peer, label, host, url = (p.get(k) for k in ("peer", "label", "host", "url"))
+        if not isinstance(peer, str) or not PEER_ID.fullmatch(peer) or peer in ("fold", "agent"):
+            raise BridgeError("bad_request", "peer must be a peer id")
+        if not isinstance(label, str) or not label.strip() or len(label) > 40:
+            raise BridgeError("bad_request", "label must be 1 to 40 characters")
+        if not isinstance(host, str) or not PEER_HOST.fullmatch(host):
+            raise BridgeError("bad_request", "host must be an ssh alias or user@host")
+        if not isinstance(url, str) or not PEER_URL.fullmatch(url):
+            raise BridgeError("bad_request", "url must be the forwarded loopback address")
+        return peer, label.strip(), host, url
+
+    async def op_peers_probe(self, p) -> dict:
+        """Read what a forwarded peer has, for the confirm card: its `hello` and `bots.list`, nothing else."""
+        url = p.get("url")
+        if not isinstance(url, str) or not PEER_URL.fullmatch(url):
+            raise BridgeError("bad_request", "url must be the forwarded loopback address")
+        link = PeerLink("probe", str(p.get("label") or "that computer")[:40], "", url)
+        await link.open()
+        try:
+            hello = await link.call("hello", {}, PEER_OPEN_TIMEOUT)
+            rows = peer_rows((await link.call("bots.list", {}, PEER_OPEN_TIMEOUT) or {}).get("bots"))
+        finally:
+            await link.close()
+        hermes = (hello or {}).get("hermes") if isinstance((hello or {}).get("hermes"), dict) else {}
+        return {"version": str((hello or {}).get("version") or ""),
+                "hermes": {"home": str(hermes.get("home") or ""), "version": str(hermes.get("version") or "")},
+                "bots": [{k: r[k] for k in ("name", "display_name", "model", "provider", "status")} for r in rows]}
+
+    async def op_peers_attach(self, p) -> Reply:
+        """Attach a forwarded peer (the desktop shell's link is up): `hello` and `bots.list` on it, then its bots
+        join this bridge's list. Attaching an id again replaces the old link."""
+        peer, label, host, url = self._peer_args(p)
+        old = self.peers.pop(peer, None)
+        if old is not None:
+            await old.close()
+        link = PeerLink(peer, label, host, url)
+        link.on_event, link.on_lost = self._peer_event, self._peer_lost
+        await link.open()
+        try:
+            link.hello = await link.call("hello", {}, PEER_OPEN_TIMEOUT) or {}
+            link.rows = peer_rows((await link.call("bots.list", {}, PEER_OPEN_TIMEOUT) or {}).get("bots"))
+        except BaseException:
+            await link.close()
+            raise
+        link.running = {r["name"] for r in link.rows if r["running"]}
+        if old is not None:
+            await self._peer_turns_end(old, f"lost the link to {old.label}")
+        self.peers[peer] = link
+        back = peer in self._peers_seen
+        self._peers_seen.add(peer)
+
+        async def announce() -> None:
+            await self.emit("bots.update", "")
+            if back:  # the same bots attached again after a drop: their open chats re-read themselves
+                for r in link.rows:
+                    await self.emit("bot.restarted", f"{peer}:{r['name']}", ok=True)
+        return Reply({"peer": peer, "bots": await self._peer_bots(link)}, announce)
+
+    async def op_peers_detach(self, p) -> Reply:
+        peer = p.get("peer")
+        if not isinstance(peer, str) or not PEER_ID.fullmatch(peer):
+            raise BridgeError("bad_request", "peer must be a peer id")
+        link = self.peers.pop(peer, None)
+        if link is None:
+            return Reply({})
+        await link.close()
+        await self._peer_turns_end(link, f"{link.label} was disconnected")
+        return Reply({}, lambda: self.emit("bots.update", ""))
+
+    async def _peer_bots(self, link: PeerLink) -> list[dict]:
+        """The peer's rows for bots.list, read fresh when the link is up (else the last ones, offline)."""
+        if link.connected:
+            with contextlib.suppress(BridgeError):
+                link.rows = peer_rows((await link.call("bots.list", {}, PEER_LIST_TIMEOUT) or {}).get("bots"))
+        tag = {"kind": "ssh", "peer": link.peer, "label": link.label, "host": link.host}
+        return [{**r, "name": f"{link.peer}:{r['name']}",
+                 "status": r["status"] if link.connected else "offline",
+                 "running": r["name"] in link.running if link.connected else False, "host": tag}
+                for r in link.rows]
+
+    async def _peer_op(self, p) -> dict:
+        """A bot-scoped op for `<peer>:<name>`: forwarded with the bare name, or refused when it needs this computer."""
+        key = p["bot"]
+        peer, _, name = key.partition(":")
+        link = self.peers.get(peer)
+        op = p["op"]
+        if link is None or not PEER_BOT.fullmatch(name):
+            raise BridgeError("unknown_bot", f"no bot named {key}")
+        if op in PEER_REFUSED:
+            raise BridgeError("remote_bot", PEER_REFUSED[op].format(label=link.label))
+        if p.get("session") is not None:
+            raise BridgeError("remote_bot", PEER_REFUSED["folder.open"].format(label=link.label))
+        if op == "bots.restart_scope":
+            row = next((r for r in link.rows if r["name"] == name), None)
+            return {"gateway": key, "bots": [{"name": key, "display_name": row["display_name"] if row else name}]}
+        if op not in PEER_FORWARD:
+            raise BridgeError("remote_bot", f"{op} is not available for a bot on another computer")
+        if name not in link.names:
+            raise BridgeError("unknown_bot", f"no bot named {key}")
+        params = {k: v for k, v in p.items() if k not in ("id", "op")}
+        params["bot"] = name
+        if op == "automations.add" and params.get("deliver") == f"bot-chat:{key}":
+            params["deliver"] = f"bot-chat:{name}"
+        out = await link.call(op, params)
+        if op == "media.read" and isinstance(out, dict):
+            # the file is on the other computer: the bytes came over the link; nothing here may open its path
+            out = {**out, "remote": True}
+        if op == "chat.send":
+            link.running.add(name)
+        return out
+
+    async def _peer_event(self, link: PeerLink, f: dict) -> None:
+        """A peer's event, passed on under the namespaced bot name. Events of no bot (the other computer's own
+        accounts) and of a folder chat (omher opens none there) are dropped."""
+        bot, event = f.get("bot"), f.get("event")
+        if not isinstance(bot, str) or not PEER_BOT.fullmatch(bot) or f.get("session") is not None:
+            return
+        if event == "turn.start":
+            link.running.add(bot)
+        elif event == "turn.end":
+            link.running.discard(bot)
+        elif event == "bot.status" and f.get("running") is False:
+            link.running.discard(bot)
+        fields = {k: v for k, v in f.items() if k not in ("event", "bot")}
+        await self.emit(event, f"{link.peer}:{bot}", **fields)
+
+    async def _peer_turns_end(self, link: PeerLink, reason: str) -> None:
+        """A link that went away ends its bots' live turns as stopped, at once; nothing is sent again."""
+        running, link.running = set(link.running), set()
+        for bot in sorted(running):
+            await self.emit("turn.end", f"{link.peer}:{bot}", outcome="interrupted", error=reason)
+        for r in link.rows:
+            await self.emit("bot.status", f"{link.peer}:{r['name']}", status="offline", running=False)
+
+    async def _peer_lost(self, link: PeerLink) -> None:
+        if self.peers.get(link.peer) is not link:
+            return
+        await self._peer_turns_end(link, f"lost the link to {link.label}")
+        await self.emit("bots.update", "")
 
     # ------------------------------------------------------------ elsewhere (read only)
 

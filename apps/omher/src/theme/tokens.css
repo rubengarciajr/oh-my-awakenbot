@@ -5,15 +5,15 @@
 :root {
   color-scheme: dark;
 
-  /* brand: OMH logo (violet-magenta -> hot pink -> coral) and wordmark (lavender -> lime) */
-  --l1: #a646c4;
-  --l2: #d33c8d;
-  --l3: #e0595e;
-  --w1: #be79d0;
-  --w2: #f07cc4;
-  --w3: #f8929a;
-  --w4: #eaaf55;
-  --w5: #ccd465;
+  /* AWAKEN: warm off-white and off-black. */
+  --l1: #d8d6d0;
+  --l2: #f3f1ec;
+  --l3: #fbfaf7;
+  --w1: #f3f1ec;
+  --w2: #f3f1ec;
+  --w3: #fbfaf7;
+  --w4: #fbfaf7;
+  --w5: #fafafa;
   --g-logo: linear-gradient(120deg, var(--l1), var(--l2) 55%, var(--l3));
   --g-word: linear-gradient(90deg, var(--w1), var(--w2) 30%, var(--w3) 55%, var(--w4) 80%, var(--w5));
 
@@ -23,42 +23,42 @@
   --a2: var(--l2);
   --a3: var(--l3);
   --g-accent: linear-gradient(120deg, var(--a1), var(--a2) 55%, var(--a3));
-  --on-accent: #fff;
+  --on-accent: #0c0c0e;
   --spin: var(--w1);
 
   /* surfaces */
-  --page: #050406;
-  --bg: #0b090d;
-  --side: #121014;
-  --raise: #1b181e;
-  --raise2: #232026;
-  --line: #29252c;
-  --line-soft: #1c1a1f;
-  --line-strong: #3d3640;
+  --page: #0c0c0e;
+  --bg: #111214;
+  --side: #17181b;
+  --raise: #202125;
+  --raise2: #2a2b30;
+  --line: #323338;
+  --line-soft: #25262a;
+  --line-strong: #4b4d54;
   --hover: rgba(255, 255, 255, 0.03);
   --active-row: var(--raise2);
   --search-bg: var(--raise2);
   --grp-bg: var(--side);
-  --pop: #262229;
-  --seg-on: #3d3843;
-  --knob: #c9c2cc;
-  --toggle-off: #2e2a32;
-  --toggle-off-line: #3d3843;
+  --pop: #25262b;
+  --seg-on: #44464e;
+  --knob: #d8d6d0;
+  --toggle-off: #36373d;
+  --toggle-off-line: #44464e;
 
   /* text */
-  --ink: #f3eff4;
-  --body: #dcd6de;
-  --muted: #9a929d;
-  --quiet: #6f6872;
+  --ink: #f3f1ec;
+  --body: #d8d6d0;
+  --muted: #a7a8af;
+  --quiet: #909198;
   --ok: #7fd6a4;
   --danger: #f08a8a;
-  --accent: #f07cc4;
-  --link: #b9b0ff;
+  --accent: #f3f1ec;
+  --link: #f3f1ec;
 
   /* bubbles: filled on both sides, no border */
-  --bub-bot: #1d1a20;
-  --bub-me: #3c2a3b;
-  --user: #26222a;
+  --bub-bot: #232428;
+  --bub-me: #2d2e32;
+  --user: #26272c;
 
   /* elsewhere source squares */
   --src-discord: #5865f2;
@@ -87,7 +87,7 @@
 
   --shadow: 0 40px 120px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --pop-shadow: 0 18px 48px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  --scrollbar: #2c272f;
+  --scrollbar: #3b3d44;
 }
 
 [data-theme="light"] {
@@ -118,11 +118,11 @@
   --quiet: #756d7a;
   --ok: #1f8a52;
   --danger: #c0392b;
-  --accent: #c4367f;
-  --link: #5b4fd1;
+  --accent: #35363b;
+  --link: #35363b;
 
   --bub-bot: #f2f0f4;
-  --bub-me: #f3dcea;
+  --bub-me: #e8e7e4;
   --user: #f0edf2;
 
   --src-slack: #d08a1e;
@@ -142,6 +142,14 @@
   --a2: var(--l2);
   --a3: var(--l3);
 }
+[data-palette="graphite"],
+[data-palette="ocean"],
+[data-palette="forest"],
+[data-palette="sunset"],
+[data-palette="rose"] {
+  --on-accent: #fff;
+}
+
 [data-palette="graphite"] {
   --a1: #6a707c;
   --a2: #565c67;

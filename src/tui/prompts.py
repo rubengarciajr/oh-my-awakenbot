@@ -8,10 +8,10 @@ or withdrawn by the gateway. Three rules shape this module:
   they pressed or text they submitted; Esc or Ctrl+C sends the contract's
   decline frame (an explicit deny for approvals). Every deny the person gives
   an approval (Esc, Ctrl+C, `d`, `n`, Enter on deny) also asks the app to stop
-  the running turn (`Answer.stops`). Allowing a command takes
-  the arrows and then Enter: deny is the first row and selected, the
-  narrowest allow sits under it, the selection does not wrap, no digit picks
-  a choice, and a letter can only deny. An approval's last row denies too,
+  the running turn (`Answer.stops`). An approval opens on allow once
+  (`APPROVAL_DEFAULT`), so Enter allows that one command: deny is the first
+  row, just above it, the broader allows sit under it, the selection does not
+  wrap, no digit picks a choice, and a letter can only deny. An approval's last row denies too,
   but stops nothing: it asks the app to give the composer to what the person
   tells Hermes instead (`Answer.tell`). The app ignores every key for a
   moment after any slot opens, or its next question appears. A request the gateway
@@ -76,8 +76,8 @@ from .style import Line, Span, Style, fill, is_fill
 from .theme import CATCH_MARK, Theme
 from .width import cell_width, line_width, truncate, truncate_left, truncate_line, wrap_line
 
-# The order is the distance from safe: deny first (and selected), then the
-# narrowest allow, then the broadest. `always` is Hermes' permanent allow:
+# The order is the distance from safe: deny first, then the narrowest allow
+# (selected as the slot opens, `APPROVAL_DEFAULT`), then the broadest. `always` is Hermes' permanent allow:
 # Hermes saves the command's pattern in its config (`command_allowlist`), so
 # later commands like it run without asking. It is offered only when Hermes
 # lists it (Hermes leaves it out where a permanent allow is refused, such as a
@@ -86,6 +86,9 @@ from .width import cell_width, line_width, truncate, truncate_left, truncate_lin
 # this session.
 APPROVAL_ORDER = ("deny", "once", "session", "always")
 APPROVAL_CHOICES = ("deny", "once", "session")
+# The row an approval opens on (owner, 2026-11-15: allow once, not deny). The keys typed for the composer as the
+# slot opens still land nowhere: every key is ignored for a moment after a slot opens (`App._slot_arming`).
+APPROVAL_DEFAULT = "once"
 # Last on every approval, as Claude Code puts its "No, and tell Claude" row last: it sends the explicit deny, and the
 # app then gives the composer to what the person tells Hermes instead (`App._open_tell`).
 APPROVAL_TELL = "tell"
@@ -253,6 +256,9 @@ class PromptSlot:
     draft_sent: str = ""
     # The field's words before the composer's caret, as `draft` shows them: where the caret stands on the field's row.
     draft_before: str = ""
+    # What the model wrote only into its reasoning before asking a clarify with no reply text (`silent_lead`),
+    # drawn dim above the first question as its context; "" when the reply said it, or nothing could be read.
+    silent_lead: str = ""
     # Where the open text field's caret is drawn, (row, col) within the slot's last rows (`_framed_lines`); None when
     # no field is open on a framed question's row, or its row was cut.
     caret: tuple[int, int] | None = field(default=None, init=False, repr=False, compare=False)
@@ -427,10 +433,10 @@ class PromptSlot:
     def _approval_key(self, key: Key) -> Answer | None:
         """Up and Down (Left and Right too) move and stop at either end; Enter answers the highlighted choice.
 
-        Deny is the first row and selected as the slot opens, so Up then Enter,
-        the composer's recall-and-resend typed as the slot opened, still
-        denies: Up moves nothing off the first row. No digit picks a choice,
-        and the only letters that answer deny. Every deny stops the turn
+        Allow once is selected as the slot opens and deny is the row above it,
+        so Up then Enter denies and Enter alone allows that one command; keys
+        typed for the composer as the slot opened are ignored (`App._slot_arming`).
+        No digit picks a choice, and the only letters that answer deny. Every deny stops the turn
         (`_denied`) but the tell row's.
         """
         choices = self.approval_choices()
@@ -911,12 +917,21 @@ class PromptSlot:
             return []
         total = len(self._questions())
         counter = f" ({self.question_index + 1}/{total})" if total > 1 else ""
-        head: list[Line] = list(
-            wrap_line((Span("? ", theme.user), Span(str(question.get("question", "")) + counter, theme.text), *queued),
-                      width)
-        )
+        lead_rows = [row for part in self._with_silent_lead("").splitlines() if part.strip()
+                     for row in wrap_line((Span(part.strip(), theme.muted),), width)]
+        if len(lead_rows) > LEAD_ROWS:
+            lead_rows = [*lead_rows[: LEAD_ROWS - 1], _ends_with_more(lead_rows[LEAD_ROWS - 1], width, theme)]
+        head: list[Line] = [*lead_rows, *wrap_line(
+            (Span("? ", theme.user), Span(str(question.get("question", "")) + counter, theme.text), *queued), width)]
         return _keep_ends([*head, (Span("  type an answer and press enter · esc cancels", theme.hint),)], max_rows,
                           width, theme)
+
+    def _with_silent_lead(self, lead: str) -> str:
+        """`lead` (the context Hermes wrote before the asked sentence) after the reasoning the model wrote in place of
+        a reply (`silent_lead`), on the first question only: the later ones follow from the first."""
+        if not self.silent_lead.strip() or self.question_index != 0:
+            return lead
+        return f"{self.silent_lead.strip()}\n{lead}" if lead.strip() else self.silent_lead.strip()
 
     def _framed_lines(
         self, width: int, theme: Theme, max_rows: int, queued: Line, whole: bool, waited: str,
@@ -941,6 +956,7 @@ class PromptSlot:
         counter = f" ({self.question_index + 1}/{total})" if total > 1 else ""
         note: Line = (Span(MULTI_NOTE, theme.muted),) if self._multi() else ()
         lead, asked = question_parts(text)
+        lead = self._with_silent_lead(lead)
         lead_rows = [row for part in lead.splitlines() if part.strip()
                      for row in wrap_line((Span(part.strip(), theme.muted),), inner)]
         if not whole and len(lead_rows) > LEAD_ROWS:
@@ -1218,6 +1234,8 @@ def open_request(request_id: str, method: str, params: dict[str, Any]) -> Prompt
         # An empty slot would wait on a question nobody can see; answer it now, visibly.
         return ImmediateAnswer(slot.decline(), "Hermes sent a clarify request with no question in it; declined.")
     if method == "approval":
-        # Enter on an untouched approval denies: allowing takes the arrows, then Enter.
-        slot.selected = slot.approval_choices().index("deny")
+        # Allow once is highlighted as the slot opens (owner, 2026-11-15), so Enter on an untouched approval allows
+        # this one command; Up then Enter denies. A request that does not offer allow once opens on deny.
+        choices = slot.approval_choices()
+        slot.selected = choices.index(APPROVAL_DEFAULT if APPROVAL_DEFAULT in choices else "deny")
     return slot

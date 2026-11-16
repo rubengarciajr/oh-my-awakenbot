@@ -1,13 +1,19 @@
 // The one activity line per turn (design rule 6). Tool/skill calls never get their own timeline rows:
 // while the turn runs, this line's text slides up in place; when it ends it collapses to
 // "Worked for 2m 41s · 6 steps" and a click opens one detail row per step.
-import { useEffect, useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import type { SlotProps } from "../../features";
-import { activityText, getStore, liveLabel, THINKING, WORKING, type Step, type Turn } from "../../state/store";
+import { activityText, getStore, liveLabel, subagentEnded, THINKING, WORKING, type Step, type Turn } from "../../state/store";
 import { ChevronRight, Spinner } from "../../ui";
 import { elapsed } from "../../app/time";
+import { useClock } from "../../app/clock";
 import { t, t as tr, tx, type Key } from "../../i18n";
+import { FanoutCard, rowMs } from "./Subagents";
+import { DiffView, PlanList, ThinkingText } from "./Work";
 import "./activity.css";
+
+/** A fan-out still counts as running this long after its last event, though its turn ended (background). */
+const FANOUT_QUIET_MS = 10 * 60_000;
 
 export const slot = "activity";
 
@@ -27,7 +33,7 @@ const VERBS: Record<string, Key> = {
 };
 const stepVerb = (name: string) => (VERBS[name] ? tr(VERBS[name]) : name.replace(/_/g, " "));
 const DAG_STATUS: Record<string, Key> = { failed: "act.dag.failed", working: "act.dag.working", stopped: "act.dag.stopped", returned: "act.dag.returned" };
-/** Code-like details (commands, paths, URLs) render in mono; prose (a helper's goal) stays text. */
+/** Code-like details (commands, paths, URLs) render in mono; prose (a subagent's goal) stays text. */
 const isCode = (name: string) => !["delegate_task", "web_search"].includes(name);
 
 /** Step duration: "0.4s" under a second, else "38s" / "2m 41s". */
@@ -82,11 +88,11 @@ function Ticker({ label }: { label: Label }) {
   );
 }
 
-/** "Assigned `t8-site` to a helper · working": one plain line per dag part a delegate_task handed out. The
+/** "Assigned `t8-site` to a subagent · working": one plain line per dag part a delegate_task handed out. The
  *  status is read-only (nothing here reassigns); the run link opens the Runs tab on that run. */
 function DagRows({ step, live }: { step: Step; live: boolean }) {
   const running = step.endedAt === undefined;
-  const status = step.ok === false ? "failed" : running ? (live ? "working" : "stopped") : "returned";
+  const status = step.stopped ? "stopped" : step.ok === false ? "failed" : running ? (live ? "working" : "stopped") : "returned";
   return (
     <>
       {step.dag!.map((d) => (
@@ -112,18 +118,48 @@ function DagRows({ step, live }: { step: Step; live: boolean }) {
   );
 }
 
-function StepRow({ step, live, now }: { step: Step; live: boolean; now: number }) {
+/** A stopped step's time: how long it had run at Stop, or, when the agent later said it finished, that it kept
+ *  running and how long the command ran in all (from its own start, by the agent's count). */
+function stoppedTime(step: Step, ms: number): string {
+  if (!step.late) return stepTime(ms);
+  return tr(step.late.ok ? "act.stepLate" : "act.stepLateFailed", { t: stepTime(step.late.ms) });
+}
+
+/** One step row. `io` (a read-only session view, `src/harness/AgentChat`): the call's full input and result, shown
+ *  under the row when it is opened, the way a file edit opens to its diff. */
+export function StepRow({ step, live, now, io }: { step: Step; live: boolean; now: number; io?: { input: string; result: string } }) {
+  // a file edit that carries its change opens to it (closed by default: a long change never moves the chat)
+  const [diffOpen, setDiffOpen] = useState(false);
   if (step.name === "delegate_task" && step.dag?.length) return <DagRows step={step} live={live} />;
-  const failed = step.ok === false;
+  const stopped = !!step.stopped;
+  const failed = step.ok === false && !stopped;
   const running = step.endedAt === undefined;
   const ms = (step.endedAt ?? now) - step.startedAt;
-  return (
+  const diff = step.diff?.length ? step.diff : null;
+  const opens = !!diff || !!io;
+  const row = (
     <div
-      className={`act-step${failed ? " fail" : ""}`}
+      className={`act-step${failed ? " fail" : ""}${stopped ? " stopped" : ""}${opens ? " has-diff" : ""}${diffOpen ? " open" : ""}`}
       data-testid="activity-step"
-      data-ok={failed ? "false" : running ? "running" : "true"}
+      data-ok={stopped ? "stopped" : failed ? "false" : running ? "running" : "true"}
+      {...(step.late ? { "data-late": step.late.ok ? "done" : "failed" } : {})}
+      {...(opens
+        ? {
+            role: "button",
+            tabIndex: 0,
+            "aria-expanded": diffOpen,
+            onClick: () => setDiffOpen((o) => !o),
+            onKeyDown: (e: KeyboardEvent) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setDiffOpen((o) => !o);
+              }
+            },
+          }
+        : {})}
     >
-      <span className="k">{stepVerb(step.name)}</span>
+      {stopped && <span className="act-ic interrupted" aria-hidden>■</span>}
+      <span className="k">{stopped ? tr("act.stoppedVerb") : stepVerb(step.name)}</span>
       {step.detail &&
         (isCode(step.name) ? (
           <code className="v" title={step.detail}>
@@ -134,24 +170,45 @@ function StepRow({ step, live, now }: { step: Step; live: boolean; now: number }
             {step.detail}
           </span>
         ))}
-      <span className="s">{running && live ? "…" : failed ? tr("act.stepFailed", { t: stepTime(ms) }) : stepTime(ms)}</span>
+      <span className="s" data-testid="activity-step-time">
+        {step.untimed ? "" : running && live ? "…" : stopped ? stoppedTime(step, ms) : failed ? tr("act.stepFailed", { t: stepTime(ms) }) : stepTime(ms)}
+      </span>
+      {opens && (
+        <span className="act-chev" aria-hidden>
+          <ChevronRight size={9} />
+        </span>
+      )}
     </div>
+  );
+  if (!opens) return row;
+  return (
+    <>
+      {row}
+      {diffOpen && diff && <DiffView files={diff} />}
+      {diffOpen && io && (
+        <div className="act-io" data-testid="activity-step-io">
+          {io.input && <pre className="act-io-in" data-testid="activity-step-input">{io.input}</pre>}
+          {io.result && <pre className="act-io-out" data-testid="activity-step-result">{io.result}</pre>}
+        </div>
+      )}
+    </>
   );
 }
 
-export default function Activity({ item, live }: SlotProps["activity"]) {
+export default function Activity({ bot, item, live }: SlotProps["activity"]) {
   const t = item.turn;
   const [open, setOpen] = useState(false);
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!live) return;
-    const h = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(h);
-  }, [live]);
-
-  const now = Date.now();
+  // the app's one clock: the elapsed time here and a subagent row's time below read the same instant
+  const now = useClock(live);
   const total = elapsed((t.endedAt ?? now) - t.startedAt);
-  const n = t.steps.length;
+  // while the line names a subagent that is still out ("Asking `Count lines of b.txt`"), its time is that subagent's,
+  // the number its row in the card shows; otherwise the turn's
+  const last = t.steps[t.steps.length - 1];
+  const named = live && last?.name === "delegate_task" && last.endedAt === undefined && liveLabel(t).code === last.detail;
+  const sub = named ? t.fanouts?.flatMap((f) => f.subs).find((x) => x.id === last.id && !subagentEnded(x)) : undefined;
+  const shownTime = sub ? elapsed(rowMs(sub, now)) : total;
+  // what the details show: a delegate_task that handed out dag parts is one row per part
+  const n = t.steps.reduce((k, st) => k + (st.name === "delegate_task" && st.dag?.length ? st.dag.length : 1), 0);
   const state = live ? "live" : t.outcome === "interrupted" || t.outcome === "ended" || t.outcome === "error" ? t.outcome : "done";
   const canOpen = n > 0;
 
@@ -187,13 +244,13 @@ export default function Activity({ item, live }: SlotProps["activity"]) {
         {live ? (
           <Ticker label={shownLabel(liveLabel(t))} />
         ) : (
-          <span className="act-sum" data-testid="activity-text">
+          <span className={`act-sum${state === "error" ? " wrap" : ""}`} data-testid="activity-text">
             {summary}
           </span>
         )}
         {live && (
           <span className="act-el" data-testid="activity-elapsed">
-            {total}
+            {shownTime}
           </span>
         )}
         {canOpen && (
@@ -202,6 +259,10 @@ export default function Activity({ item, live }: SlotProps["activity"]) {
           </span>
         )}
       </button>
+      {t.thinking && <ThinkingText text={t.thinking} />}
+      {t.fanouts?.map((f) => (
+        <FanoutCard key={f.key} fan={f} live={live || now - f.updatedAt < FANOUT_QUIET_MS} bot={bot} />
+      ))}
       {open && canOpen && (
         <div className="act-det" data-testid="activity-details">
           {t.steps.map((s) => (
@@ -209,6 +270,8 @@ export default function Activity({ item, live }: SlotProps["activity"]) {
           ))}
         </div>
       )}
+      {/* the agent's todo list: under the step rows, so a click on the line opens the steps right below it */}
+      {t.plan && t.plan.length > 0 && <PlanList items={t.plan} />}
     </div>
   );
 }

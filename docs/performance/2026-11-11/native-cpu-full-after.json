@@ -1,0 +1,422 @@
+{
+  "schema": "awaken_native_resource_measurement/v2",
+  "label": "installed-post-0acf4223-full-native-cohort",
+  "method": {
+    "cpu": "sum of ps cumulative CPU-time deltas divided by monotonic elapsed seconds; one fully busy core = 100 percent",
+    "cpu_time_resolution_seconds": 0.01,
+    "rss": "mean and peak of summed resident KiB across endpoint and 0.5-second samples",
+    "duration_seconds_per_window": 5,
+    "coverage": "full identified native app cohort: app, local Python bridge and the three WebKit GPU/Networking/WebContent helpers independently attributed to the app by responsibility and matching coalition IDs; unrelated WebKit processes excluded",
+    "ui": "CUA red close hides; authorized open -a restores; AeroSpace read-only window inventory verifies visibility; no chat, settings, or gateway changes"
+  },
+  "app_pid": 79115,
+  "cohort_provenance": {
+    "api": "libSystem responsibility_get_pid_responsible_for_pid plus proc_pidinfo flavor 20; returned 40-byte coalition info; first two uint64 IDs",
+    "reference": "https://github.com/apple/darwin-xnu/blob/main/bsd/sys/proc_info.h",
+    "owner_and_bridge_pids": [
+      79115,
+      79136
+    ],
+    "webkit_pids": [
+      79132,
+      79134,
+      79135
+    ],
+    "owner_coalition_ids": [
+      367964,
+      367965
+    ],
+    "process_bindings": {
+      "79115": {
+        "responsible_pid": 79115,
+        "coalition_ids": [
+          367964,
+          367965
+        ]
+      },
+      "79132": {
+        "responsible_pid": 79115,
+        "coalition_ids": [
+          367964,
+          367965
+        ]
+      },
+      "79134": {
+        "responsible_pid": 79115,
+        "coalition_ids": [
+          367964,
+          367965
+        ]
+      },
+      "79135": {
+        "responsible_pid": 79115,
+        "coalition_ids": [
+          367964,
+          367965
+        ]
+      },
+      "79136": {
+        "responsible_pid": 79115,
+        "coalition_ids": [
+          367964,
+          367965
+        ]
+      }
+    },
+    "baseline_correlation_file": "/tmp/awaken-webkit-correlation.json",
+    "validation": "all five process identities, ownership, responsibility and coalition IDs checked every sample; app descendant and attributed WebKit PID sets must remain unchanged; fail on churn",
+    "other_webkit_process_count_at_init": 7
+  },
+  "processes": [
+    {
+      "pid": 79115,
+      "ppid": 1,
+      "pgid": 79115,
+      "cpu_seconds": 24.62,
+      "rss_kib": 69648,
+      "name": "awaken-bot",
+      "started": "Wed Nov 11 14:35:10 2026"
+    },
+    {
+      "pid": 79132,
+      "ppid": 1,
+      "pgid": 79132,
+      "cpu_seconds": 532.27,
+      "rss_kib": 24880,
+      "name": "com.apple.WebKit.GPU",
+      "started": "Wed Nov 11 14:35:11 2026"
+    },
+    {
+      "pid": 79134,
+      "ppid": 1,
+      "pgid": 79134,
+      "cpu_seconds": 0.18,
+      "rss_kib": 10960,
+      "name": "com.apple.WebKit.Networking",
+      "started": "Wed Nov 11 14:35:11 2026"
+    },
+    {
+      "pid": 79135,
+      "ppid": 1,
+      "pgid": 79135,
+      "cpu_seconds": 73.39,
+      "rss_kib": 75984,
+      "name": "com.apple.WebKit.WebContent",
+      "started": "Wed Nov 11 14:35:11 2026"
+    },
+    {
+      "pid": 79136,
+      "ppid": 79115,
+      "pgid": 79115,
+      "cpu_seconds": 1.59,
+      "rss_kib": 29312,
+      "name": "python3",
+      "started": "Wed Nov 11 14:35:11 2026"
+    }
+  ],
+  "initial_window_ids": [
+    15999
+  ],
+  "windows": [
+    {
+      "state": "visible",
+      "pair": 1,
+      "elapsed_seconds": 5.1115403335,
+      "cpu_seconds": 4.030000000000086,
+      "rss_mean_kib": 195795.2,
+      "rss_peak_kib": 196240,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [
+        15999
+      ],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "per_process_cpu_seconds": {
+        "79115": 0.16999999999999815,
+        "79132": 3.3600000000000136,
+        "79134": 0.0,
+        "79135": 0.5,
+        "79136": 0.0
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 1,
+      "elapsed_seconds": 5.0734100005,
+      "cpu_seconds": 0.01999999999998181,
+      "rss_mean_kib": 215609.6,
+      "rss_peak_kib": 222944,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "per_process_cpu_seconds": {
+        "79115": 0.019999999999999574,
+        "79132": 0.0,
+        "79134": 0.0,
+        "79135": 0.0,
+        "79136": 0.0
+      }
+    },
+    {
+      "state": "visible",
+      "pair": 2,
+      "elapsed_seconds": 5.1242666465,
+      "cpu_seconds": 3.900000000000091,
+      "rss_mean_kib": 185230.4,
+      "rss_peak_kib": 192416,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [
+        15999
+      ],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "per_process_cpu_seconds": {
+        "79115": 0.1999999999999993,
+        "79132": 3.1299999999999955,
+        "79134": 0.010000000000000009,
+        "79135": 0.5499999999999972,
+        "79136": 0.010000000000000009
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 2,
+      "elapsed_seconds": 5.0770094375,
+      "cpu_seconds": 0.030000000000086402,
+      "rss_mean_kib": 238963.2,
+      "rss_peak_kib": 239392,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "per_process_cpu_seconds": {
+        "79115": 0.019999999999999574,
+        "79132": 0.0,
+        "79134": 0.0,
+        "79135": 0.010000000000005116,
+        "79136": 0.0
+      }
+    },
+    {
+      "state": "visible",
+      "pair": 3,
+      "elapsed_seconds": 5.078904396,
+      "cpu_seconds": 3.480000000000132,
+      "rss_mean_kib": 242529.6,
+      "rss_peak_kib": 244656,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [
+        15999
+      ],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "per_process_cpu_seconds": {
+        "79115": 0.15000000000000213,
+        "79132": 2.8500000000000227,
+        "79134": 0.0,
+        "79135": 0.480000000000004,
+        "79136": 0.0
+      }
+    },
+    {
+      "state": "hidden",
+      "pair": 3,
+      "elapsed_seconds": 5.089158604,
+      "cpu_seconds": 0.04000000000007731,
+      "rss_mean_kib": 231870.4,
+      "rss_peak_kib": 233792,
+      "tracked_process_count": 5,
+      "group_process_count_min": 5,
+      "group_process_count_max": 5,
+      "window_ids": [],
+      "unrelated_webkit_process_count_min": 7,
+      "unrelated_webkit_process_count_max": 7,
+      "cohort_validated_every_snapshot": true,
+      "per_process_cpu_seconds": {
+        "79115": 0.00999999999999801,
+        "79132": 0.0,
+        "79134": 0.0,
+        "79135": 0.010000000000005116,
+        "79136": 0.020000000000000018
+      }
+    }
+  ],
+  "rejected_samples": [
+    {
+      "state": "visible",
+      "pair": 2,
+      "reason": "app descendant PID set changed during sample; interval refused and excluded from summaries",
+      "follow_up": "immediate read-only process-tree observation returned expected two descendants; official active-work count remained zero",
+      "external_command_runtime_seconds": 2.673177917,
+      "partial_cpu_endpoints_available": false,
+      "raw_timestamps_available": false
+    }
+  ],
+  "final_window_ids": [
+    15999
+  ],
+  "same_window_restored": true,
+  "same_app_pid_alive": true,
+  "final_cohort_validation_unrelated_webkit_count": 7,
+  "before_code_comparison_available": true,
+  "summary": {
+    "visible": {
+      "window_count": 3,
+      "elapsed_seconds": 15.314711376,
+      "cpu_seconds": 11.41000000000031,
+      "rss_mean_kib": 207851.73333333334,
+      "rss_peak_kib": 244656
+    },
+    "hidden": {
+      "window_count": 3,
+      "elapsed_seconds": 15.239578042,
+      "cpu_seconds": 0.09000000000014552,
+      "rss_mean_kib": 228814.4,
+      "rss_peak_kib": 239392
+    }
+  },
+  "raw_timestamp_limitations": "The initial six accepted intervals did not persist raw snapshot UTC/monotonic timestamps. One refused interval likewise persisted no partial CPU endpoints; external command runtime was 2.673177917 seconds, not a sample elapsed duration. These values are unavailable and have not been inferred.",
+  "expected_app_path": "/Applications/Awaken Bot.app",
+  "ui_observation": {
+    "same_empty_composer_after_each_restore": true,
+    "same_mimo_v2_6_pro_after_each_restore": true,
+    "final_window_visible": true,
+    "completion_summary_sent": true,
+    "app_never_quit_during_this_measurement": true
+  },
+  "active_work_checks": {
+    "before": {
+      "answered": true,
+      "active_agents": 0,
+      "active_units": 0
+    },
+    "after": {
+      "answered": true,
+      "active_agents": 0,
+      "active_units": 0
+    }
+  },
+  "package_checks": {
+    "codesign_deep_strict_before_exit_code": 0,
+    "codesign_deep_strict_after_exit_code": 0,
+    "bridge_pycache_before_exists": false,
+    "bridge_pycache_after_exists": false
+  },
+  "scope_limitations": {
+    "accepted_intervals_only": "five stable processes: installed app, local Python bridge and three WebKit helpers attributed by responsibility and matching coalition IDs; not an all-time CPU total",
+    "transient_helper_work": "one refused visible interval is excluded from accepted summaries and retained in rejected_samples; no stable-cohort claim is made for that interval",
+    "before_code_comparison_available": true
+  },
+  "old_backup_baseline": {
+    "attempted": false,
+    "reason": "strict signature verification failed before any quit/launch",
+    "codesign_exit_code": 1,
+    "codesign_error": "resource fork, Finder information, or similar detritus not allowed",
+    "backup": "build-artifacts/backups/before-performance-e412b354/Awaken Bot.app",
+    "metadata_or_signature_changes_performed": false
+  },
+  "per_process_cpu_seconds_by_state": {
+    "visible": {
+      "79115": 0.5199999999999996,
+      "79132": 9.340000000000032,
+      "79134": 0.010000000000000009,
+      "79135": 1.5300000000000011,
+      "79136": 0.010000000000000009
+    },
+    "hidden": {
+      "79115": 0.04999999999999716,
+      "79132": 0.0,
+      "79134": 0.0,
+      "79135": 0.020000000000010232,
+      "79136": 0.020000000000000018
+    }
+  },
+  "comparison": {
+    "execution_order": [
+      "post-change",
+      "pre-change signed baseline"
+    ],
+    "pre_source_commit": "edc3d33cfc46abc36c4bd1e5b7296c3f0b54cfd6",
+    "post_source_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+    "same_saved_conversation": true,
+    "ui_workload_difference": "newer build renders recent-first conversation DOM; older build renders full-history DOM",
+    "native_causal_improvement_claimed": false,
+    "hidden_cpu_improvement_demonstrated": false,
+    "scope": "accepted stable app+bridge+3 attributed WebKit cohort intervals; transient child helper work is excluded whenever an interval is refused",
+    "limitations": [
+      "Build order was not randomized; post-change was measured before signed older baseline.",
+      "The newer app process was warm; the older baseline was a fresh process.",
+      "Pre-change samples persist raw UTC/monotonic snapshots; earlier post-change intervals did not persist raw timestamps.",
+      "Two preliminary baseline windows were conservatively excluded to avoid concurrent read-only metadata probe overlap."
+    ],
+    "observed_before_summary": {
+      "visible": {
+        "window_count": 3,
+        "elapsed_seconds": 15.449148188,
+        "cpu_seconds": 13.250000000000007,
+        "rss_mean_kib": 236354.66666666666,
+        "rss_peak_kib": 241632
+      },
+      "hidden": {
+        "window_count": 3,
+        "elapsed_seconds": 15.270067625000003,
+        "cpu_seconds": 0.07999999999999119,
+        "rss_mean_kib": 215865.6,
+        "rss_peak_kib": 227472
+      }
+    },
+    "observed_after_summary": {
+      "visible": {
+        "window_count": 3,
+        "elapsed_seconds": 15.314711376,
+        "cpu_seconds": 11.41000000000031,
+        "rss_mean_kib": 207851.73333333334,
+        "rss_peak_kib": 244656
+      },
+      "hidden": {
+        "window_count": 3,
+        "elapsed_seconds": 15.239578042,
+        "cpu_seconds": 0.09000000000014552,
+        "rss_mean_kib": 228814.4,
+        "rss_peak_kib": 239392
+      }
+    }
+  },
+  "restoration": {
+    "installed_app_pid": 2329,
+    "installed_executable_path": "/Applications/Awaken Bot.app/Contents/MacOS/awaken-bot",
+    "installed_source_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+    "installed_executable_sha256": "01f1d0a792823e2c69fbc3272fe739568a5c652c3ef5f00ce0990aafc52e66e0",
+    "matched_pristine_current_updater_archive": "build-artifacts/0.1.0/desktop-0acf4223/awaken-bot-0.1.0-macos-arm64.app.tar.gz",
+    "baseline_app_pid_98719_exited": true,
+    "installed_codesign_deep_strict_exit_code": 0,
+    "installed_bridge_pycache_exists": false,
+    "current_chat_and_empty_draft_preserved": true,
+    "current_mimo_v2_6_pro_label_observed": true,
+    "current_window_visible": true,
+    "completion_summary_sent": true
+  },
+  "evidence_export": {
+    "original_receipt_sha256": "a781a79c61963cabff8a12e4d231ebde76adb6697266c4416330bde57dd7930f",
+    "all_attempts_and_observations_retained": true,
+    "omitted_derived_field": "cpu_percent_of_one_core",
+    "cpu_units": "CPU-seconds and elapsed wall-seconds are retained; one-core utilization is their ratio",
+    "snapshot_serialization": "raw snapshots moved to indexed JSONL without changing values"
+  }
+}

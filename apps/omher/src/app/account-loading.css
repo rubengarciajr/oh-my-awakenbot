@@ -1,0 +1,42 @@
+.account-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(17, 18, 20, .7);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: #eeeae5;
+  /* The native controls and navigation remain usable during a long connection. */
+  pointer-events: none;
+}
+.account-loading-center { position: relative; }
+.account-loading .orb-mark {
+  display: block;
+  width: min(300px, 60vw, 55vh);
+  height: min(300px, 60vw, 55vh);
+  filter: drop-shadow(0 0 32px rgba(218, 237, 246, .14));
+}
+.account-loading .orb-mark img { animation-duration: 14s; }
+.account-loading p {
+  position: absolute;
+  top: calc(100% + 22px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: .08em;
+}
+.account-loading-dots { display: inline-flex; width: 1.2em; }
+.account-loading-dots i { font-style: normal; opacity: 0; animation: loading-dot-one 1.6s linear infinite; }
+.account-loading-dots i:nth-child(2) { animation-name: loading-dot-two; }
+.account-loading-dots i:nth-child(3) { animation-name: loading-dot-three; }
+@keyframes loading-dot-one { 0%, 24% { opacity: 0; } 25%, 99% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes loading-dot-two { 0%, 49% { opacity: 0; } 50%, 99% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes loading-dot-three { 0%, 74% { opacity: 0; } 75%, 99% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .account-loading .orb-mark img { animation: none; }
+  .account-loading-dots i { animation: none; opacity: 1; }
+}

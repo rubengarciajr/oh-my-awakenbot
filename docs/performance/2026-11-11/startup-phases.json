@@ -1,0 +1,219 @@
+{
+  "schema": "awaken_cold_start_phase_receipt/v1",
+  "observational_only": true,
+  "backend_commit": "1b5c685509c98b407e3364dfa562097ed593daa2",
+  "app_commit": "e412b3546b86559b243d2fc42092242f8a23ca1e",
+  "corpus": {
+    "live_launches": 1,
+    "profile_count": 22,
+    "selection": "cold launch immediately after backend revision changed; configured profiles preserved",
+    "home_maintenance_ran": true,
+    "prompts_submitted": 0
+  },
+  "time_basis": "seconds after the probe wall-clock start; source logs classified by local wall time; these are observed bounds, not per-phase monotonic spans",
+  "timeline": [
+    {
+      "event": "revision_change_home_maintenance_started",
+      "probe_seconds": 17.499,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "private_control_listener_started",
+      "probe_seconds": 38.617,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "optional_mcp_startup_budget_released",
+      "probe_seconds": 40.666,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "gateway_runner_start_entered",
+      "probe_seconds": 40.667,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "previous_clean_exit_recovery_marker",
+      "probe_seconds": 41.849,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "turn_warmup_completed",
+      "probe_seconds": 69.506,
+      "reported_duration_seconds": 26.7,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "first_primary_adapter_connect_started",
+      "probe_seconds": 69.56,
+      "platform": "telegram",
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "default_native_session_ready_observed",
+      "probe_seconds": 70.266,
+      "owner_process_age_seconds": 61.579,
+      "basis": "validated session discovery"
+    },
+    {
+      "event": "all_native_profiles_ready_observed",
+      "probe_seconds": 75.269,
+      "profile_count": 22,
+      "basis": "sequential validated discovery probes"
+    },
+    {
+      "event": "primary_adapter_connected",
+      "probe_seconds": 81.527,
+      "platform": "telegram",
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "global_running_summary_logged",
+      "probe_seconds": 104.773,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "global_ready_completion_logged",
+      "probe_seconds": 108.983,
+      "basis": "structured lifecycle log"
+    },
+    {
+      "event": "global_gateway_ready_observed",
+      "probe_seconds": 109.597,
+      "basis": "validated whole-gateway discovery"
+    }
+  ],
+  "derived": {
+    "owner_birth_after_probe_start_seconds": 8.687,
+    "control_listener_to_mcp_budget_release_seconds": 2.049,
+    "runner_entry_to_first_primary_connect_seconds": 28.893,
+    "default_native_before_global_observed_seconds": 39.331,
+    "existing_chat_read_seconds": 3.647,
+    "encoded_first_page_bytes": 123307
+  },
+  "conclusions": [
+    {
+      "confidence": "observed",
+      "claim": "The native session barrier was observed about 39 seconds before whole-gateway readiness; primary Telegram connection was not the local readiness barrier."
+    },
+    {
+      "confidence": "observed",
+      "claim": "Native readiness still took about a minute of actual owner process age on this revision-change cold launch; the hermetic readiness timings do not establish fast live cold launch."
+    },
+    {
+      "confidence": "source-backed",
+      "claim": "The native gate still follows primary adapter construction, and optional turn warmup starts before both construction and the native gate."
+    },
+    {
+      "confidence": "bounded_inference",
+      "claim": "The post-runner-start delay correlates closely with warmup completion, but existing logs do not separate primary adapter construction, secondary config/plugin preparation, and shared import-lock contention."
+    },
+    {
+      "confidence": "not_established",
+      "claim": "Optional MCP network discovery is not established as the dominant remaining delay; its startup budget released about two seconds after the control listener log."
+    }
+  ],
+  "source_evidence": [
+    {
+      "module": "hermes_cli.boot_bootstrap",
+      "symbol": "run_boot_bootstrap",
+      "lines": [
+        218,
+        233,
+        234
+      ],
+      "boundary": "revision-change guard runs home maintenance once per install/profile/revision"
+    },
+    {
+      "module": "gateway.run_bootstrap",
+      "symbol": "start_gateway",
+      "lines": [
+        823,
+        829,
+        878,
+        885,
+        904
+      ],
+      "boundary": "profile authorities and private listeners are initialized before runner startup"
+    },
+    {
+      "module": "gateway.run_startup",
+      "symbol": "GatewayStartupMixin._start_impl",
+      "lines": [
+        1730,
+        1737,
+        1748,
+        1754
+      ],
+      "boundary": "warmup scheduling, primary adapter construction, native gate, then primary connects"
+    },
+    {
+      "module": "gateway.run_adapters",
+      "symbol": "GatewayAdapterLifecycleMixin._create_adapter_off_loop_deps",
+      "lines": [
+        1761,
+        1768,
+        1770
+      ],
+      "boundary": "dependency probe runs off-loop; adapter creation still returns synchronously on the owner loop"
+    },
+    {
+      "module": "gateway.run_adapters",
+      "symbol": "GatewayAdapterLifecycleMixin._load_secondary_profile_config",
+      "lines": [
+        1073,
+        1076,
+        1077,
+        1080,
+        1086,
+        1087
+      ],
+      "boundary": "secret hydration/migration are off-loop, while scoped plugin discovery/config and ACL validation include synchronous owner-loop work"
+    },
+    {
+      "module": "gateway.run_runtime",
+      "symbol": "prepare_gateway_session_readiness",
+      "lines": [
+        753,
+        754,
+        761,
+        767
+      ],
+      "boundary": "all-profile preflight and pending-spool recovery precede native publication"
+    },
+    {
+      "module": "gateway.run_mcp_startup",
+      "symbol": "_discover_gateway_mcp_tools",
+      "boundary": "MCP module imports occur inside the discovery coroutine before executor dispatch"
+    }
+  ],
+  "limits": [
+    "One revision-change live launch only; no same-revision cold comparison yet.",
+    "The shared log format does not carry a process ID; only structured matching lifecycle events were used, correlated with validated owner discovery. Unparsed legacy ready lines were excluded.",
+    "The all-profile observation uses sequential probes; one descriptor publishes the staged capability for all served profiles, so the later final observation is not proof of staggered per-profile publication.",
+    "No first-model-token timing was collected.",
+    "Transcript row count is omitted because the original probe read an incorrect response key."
+  ],
+  "recommended_bounded_followup": [
+    {
+      "step": 1,
+      "action": "Repeat one operator-authorized cold launch at the same backend revision after quiescence; preserve configured profiles/tools and confirm revision-change maintenance is skipped.",
+      "bound": "one launch; 150-second observation deadline; no prompt submission"
+    },
+    {
+      "step": 2,
+      "action": "Add metadata-only monotonic phase spans in an isolated reviewed build for authority initialization, listener binding, MCP imports/budget, warmup, primary construction, secondary plugin/config preflight, spool recovery, native publication and global readiness.",
+      "bound": "stage names, durations and profile counts only; no configuration values, raw names, filesystem locations or conversation data"
+    },
+    {
+      "step": 3,
+      "action": "Use bounded Python import-duration profiling during that controlled launch and one cheap owner identify probe at a fixed interval to distinguish import-lock stalls from adapter/config work.",
+      "bound": "module names and import durations only; one probe every 0.5 seconds with finite per-call deadlines"
+    },
+    {
+      "step": 4,
+      "action": "If spans confirm the coupling, evaluate native publication before transport construction and defer optional warmup/SDK import work until after publication while keeping ACL, spool, ownership, fatal and drain guards.",
+      "bound": "isolated 1/2/22-profile import-barrier tests plus fresh review before any runtime application; retain enabled tools and transports"
+    }
+  ]
+}

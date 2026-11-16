@@ -1,0 +1,17 @@
+{
+  "schema": "awaken_local_startup/v1",
+  "app_commit": "0acf422379918d5ae22ccd2c9502c22fef0cb783",
+  "backend_commit": "1b5c685509c98b407e3364dfa562097ed593daa2",
+  "profile_count": 22,
+  "two_sessions_ready_seconds": 40.631,
+  "default_session_ready_seconds": 40.867,
+  "default_ready_process_age_seconds": 31.683,
+  "existing_chat_read_seconds": 2.058,
+  "first_page_encoded_bytes": 123307,
+  "first_page_rows": 54,
+  "all_sessions_ready_seconds": 43.557,
+  "global_gateway_ready_seconds": 78.806,
+  "profiles_pending_count": 0,
+  "global_ready": true,
+  "measurement_scope": "One existing 22-profile fleet. The two-sessions observation counts the first two detected ready profiles within that fleet; it is not an isolated two-profile installation benchmark."
+}
