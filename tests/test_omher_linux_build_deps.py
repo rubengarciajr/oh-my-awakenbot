@@ -124,12 +124,22 @@ class LinuxBuildDepsTest(unittest.TestCase):
         self.assertIn("install -y libgtk-3-dev file", self.log.read_text())
 
     def test_the_workflows_install_through_the_script_with_a_step_limit(self) -> None:
-        for name in ("omher-ci.yml", "omher-release.yml"):
-            text = (REPO_ROOT / ".github" / "workflows" / name).read_text()
-            self.assertIn("bash apps/omher/scripts/linux-build-deps.sh", text, name)
-            self.assertNotIn("sudo apt-get", text, name)
-            step = text.split("Install the Linux build libraries", 1)[1].split("- name:", 1)[0]
-            self.assertIn("timeout-minutes:", step, name)
+        workflows = REPO_ROOT / ".github" / "workflows"
+        linux = (workflows / "omher-ci.yml").read_text()
+        self.assertIn("bash apps/omher/scripts/linux-build-deps.sh", linux)
+        self.assertNotIn("sudo apt-get", linux)
+        step = linux.split("Install the Linux build libraries", 1)[1].split("- name:", 1)[0]
+        self.assertIn("timeout-minutes:", step)
+
+        # This fork's regular release delegates to Mac/Windows; Linux is a separate personal build.
+        release = (workflows / "omher-release.yml").read_text()
+        self.assertIn("uses: ./.github/workflows/awaken-bot-build.yml", release)
+        self.assertNotIn("linux-build-deps.sh", release)
+        builder = (workflows / "awaken-bot-build.yml").read_text()
+        self.assertRegex(builder, r"\bos:\s*macos-[\w.-]+")
+        self.assertRegex(builder, r"\bos:\s*windows-[\w.-]+")
+        self.assertNotRegex(builder, r"\bos:\s*(?:ubuntu|linux)-")
+        self.assertNotIn("linux-build-deps.sh", builder)
 
 
 if __name__ == "__main__":
